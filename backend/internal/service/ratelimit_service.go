@@ -75,6 +75,12 @@ const (
 	openAI403CooldownMinutesDefault = 10
 	openAI403DisableThreshold       = 3
 	openAI403CounterWindowMinutes   = 180
+	// Edge/WAF 403 responses are often transient (for example a Cloudflare
+	// challenge or a relay gateway rejection). They must not consume the
+	// account authentication failure budget: a short quarantine lets the
+	// scheduler move on while avoiding the 10 minute cooldown used for an
+	// unknown 403.
+	openAI403TransientCooldownSeconds = 60
 )
 
 // NewRateLimitService 创建RateLimitService实例
@@ -769,6 +775,23 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		"account may be suspended or lack permissions",
 	)
 
+	// A 403 is not necessarily an account-level authentication failure. Relay
+	// gateways and edge/WAF layers use 403 for short-lived challenges and
+	// policy decisions that do not invalidate the credential. Do not count
+	// these responses toward the permanent-disable threshold. This is kept
+	// deliberately narrow; unknown 403 payloads retain the existing protective
+	// behaviour below.
+	if isOpenAITransient403(upstreamMsg, responseBody) {
+		until := time.Now().Add(openAI403TransientCooldownSeconds * time.Second)
+		reason := fmt.Sprintf("OpenAI transient edge 403 cooldown (%ds): %s", openAI403TransientCooldownSeconds, msg)
+		s.notifyAccountSchedulingBlocked(account, until, "openai_403_transient")
+		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+			slog.Warn("openai_403_transient_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+		}
+		slog.Warn("openai_403_transient_cooldown", "account_id", account.ID, "until", until, "reason", msg)
+		return true
+	}
+
 	if s.openAI403CounterCache == nil {
 		s.handleAuthError(ctx, account, msg)
 		return true
@@ -804,6 +827,27 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		"threshold", openAI403DisableThreshold,
 	)
 	return true
+}
+
+// isOpenAITransient403 recognises only response text that explicitly points
+// to an intermediary/edge rejection. Authentication, workspace and policy
+// errors intentionally fall through to the normal 403 counter.
+func isOpenAITransient403(upstreamMsg string, responseBody []byte) bool {
+	text := strings.ToLower(strings.TrimSpace(upstreamMsg + " " + string(responseBody)))
+	if text == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"cloudflare", "cf-ray", "cf-mitigated", "just a moment",
+		"challenge", "edge blocked", "gateway rejection",
+		"temporarily blocked", "temporary block", "upstream gateway",
+		"proxy forbidden", "waf",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleAntigravity403 处理 Antigravity 平台的 403 错误
@@ -1025,12 +1069,14 @@ func clampRateLimit429CooldownSeconds(seconds int) int {
 func calculateOpenAI429ResetTime(headers http.Header) *time.Time {
 	snapshot := ParseCodexRateLimitHeaders(headers)
 	if snapshot == nil {
-		return nil
+		// Relays and OpenAI-compatible gateways often omit x-codex-* headers
+		// but provide the standard Retry-After/RateLimit-Reset fields.
+		return parseStandardRateLimitReset(headers)
 	}
 
 	normalized := snapshot.Normalize()
 	if normalized == nil {
-		return nil
+		return parseStandardRateLimitReset(headers)
 	}
 
 	now := time.Now()
@@ -1065,6 +1111,39 @@ func calculateOpenAI429ResetTime(headers http.Header) *time.Time {
 		return &resetAt
 	}
 
+	return parseStandardRateLimitReset(headers)
+}
+
+func parseStandardRateLimitReset(headers http.Header) *time.Time {
+	if headers == nil {
+		return nil
+	}
+	now := time.Now()
+	if value := strings.TrimSpace(headers.Get("Retry-After")); value != "" {
+		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+			resetAt := now.Add(time.Duration(seconds) * time.Second)
+			return &resetAt
+		}
+		if when, err := http.ParseTime(value); err == nil && when.After(now) {
+			return &when
+		}
+	}
+	if value := strings.TrimSpace(headers.Get("RateLimit-Reset")); value != "" {
+		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+			// RFC-compatible implementations use either delta seconds or an
+			// absolute Unix timestamp. Treat values near the current epoch as
+			// timestamps and smaller values as deltas.
+			var resetAt time.Time
+			if seconds > now.Unix()-60 {
+				resetAt = time.Unix(seconds, 0)
+			} else if seconds >= 0 {
+				resetAt = now.Add(time.Duration(seconds) * time.Second)
+			}
+			if resetAt.After(now) {
+				return &resetAt
+			}
+		}
+	}
 	return nil
 }
 

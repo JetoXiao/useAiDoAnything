@@ -25,6 +25,16 @@ export interface AffiliateAdminEntry {
   aff_count: number
 }
 
+export interface SecondLevelAgencyCapability {
+  root_partner_user_id: number
+  enabled: boolean
+  default_subagent_rate: number
+  max_subagent_rate: number
+  granted_by?: number | null
+  granted_at?: string | null
+  revoked_at?: string | null
+}
+
 export interface ListAffiliateUsersParams {
   page?: number
   page_size?: number
@@ -247,6 +257,16 @@ export async function lookupUsers(q: string): Promise<SimpleUser[]> {
     '/admin/affiliates/users/lookup',
     { params: { q } },
   )
+  return data
+}
+
+export async function listSecondLevelAgencyCapabilities(): Promise<SecondLevelAgencyCapability[]> {
+  const { data } = await apiClient.get<SecondLevelAgencyCapability[]>('/admin/affiliates/agencies')
+  return data
+}
+
+export async function updateSecondLevelAgencyCapability(userId: number, payload: { enabled: boolean; default_subagent_rate: number; max_subagent_rate: number }): Promise<SecondLevelAgencyCapability> {
+  const { data } = await apiClient.put<SecondLevelAgencyCapability>(`/admin/affiliates/agencies/${userId}/capability`, payload)
   return data
 }
 

@@ -272,6 +272,24 @@ func TestHandleFailoverError_CacheBilling(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
+	t.Run("错误指定更小重试预算时按该预算切换", func(t *testing.T) {
+		mock := &mockTempUnscheduler{}
+		fs := NewFailoverState(3, false)
+		err := newTestFailoverErr(502, true, false)
+		err.MaxSameAccountRetries = 1
+
+		action := fs.HandleFailoverError(context.Background(), mock, 100, "openai", err)
+		require.Equal(t, FailoverContinue, action)
+		require.Equal(t, 1, fs.SameAccountRetryCount[100])
+		require.Empty(t, mock.calls)
+
+		action = fs.HandleFailoverError(context.Background(), mock, 100, "openai", err)
+		require.Equal(t, FailoverContinue, action)
+		require.Equal(t, 1, fs.SwitchCount)
+		require.Contains(t, fs.FailedAccountIDs, int64(100))
+		require.Len(t, mock.calls, 1)
+	})
+
 	t.Run("第一次重试返回FailoverContinue", func(t *testing.T) {
 		mock := &mockTempUnscheduler{}
 		fs := NewFailoverState(3, false)

@@ -771,6 +771,7 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true, menuKey: 'redeem', permissionKey: 'redeem' },
     { path: '/affiliate', label: t('nav.affiliate'), icon: UsersIcon, hideInSimpleMode: true, featureFlag: flagAffiliate, menuKey: 'affiliate', permissionKey: 'affiliate' },
     { path: '/affiliate/usage', label: t('nav.affiliateUsage'), icon: ChartIcon, hideInSimpleMode: true, menuKey: 'affiliate_usage', permissionKey: 'affiliate_usage' },
+    { path: '/affiliate/second-level', label: t('nav.secondLevelAgency'), icon: UsersIcon, hideInSimpleMode: true, menuKey: 'second_level_agency', permissionKey: 'second_level_agency' },
     { path: '/user/downloads', label: t('nav.downloadResources'), icon: FolderIcon },
     { path: '/support-contact', label: t('nav.supportContact'), icon: SupportContactIcon, menuKey: 'support_contact', permissionKey: 'support_contact' },
     { path: '/profile', label: t('nav.profile'), icon: UserIcon, menuKey: 'profile', permissionKey: 'profile' },
@@ -855,6 +856,7 @@ const adminNavItems = computed((): NavItem[] => {
       children: [
         { path: '/admin/affiliates/usage', label: t('nav.affiliateUsage'), icon: ChartIcon, permissionKey: 'admin_affiliate_usage' },
         { path: '/admin/affiliates/applications', label: t('nav.affiliateApplications'), icon: UserIcon, permissionKey: 'admin_affiliate_applications' },
+        { path: '/admin/affiliates/agencies', label: t('nav.secondLevelAgency'), icon: UsersIcon, permissionKey: 'admin_affiliate_agencies' },
         { path: '/admin/affiliates/invites', label: t('nav.affiliateInviteRecords'), icon: UsersIcon, permissionKey: 'admin_affiliate_invites' },
         { path: '/admin/affiliates/rebates', label: t('nav.affiliateRebateRecords'), icon: OrderIcon, permissionKey: 'admin_affiliate_rebates' },
         { path: '/admin/affiliates/transfers', label: t('nav.affiliateTransferRecords'), icon: CreditCardIcon, permissionKey: 'admin_affiliate_transfers' },

@@ -164,6 +164,7 @@ func ProvideHandlers(
 	downloadResourcesHandler *DownloadResourcesHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
+	secondLevelAgencyHandler *SecondLevelAgencyHandler,
 ) *Handlers {
 	return &Handlers{
 		Auth:              authHandler,
@@ -188,6 +189,7 @@ func ProvideHandlers(
 		HelpCenter:        helpCenterHandler,
 		VisitorAnalytics:  visitorAnalyticsHandler,
 		DownloadResources: downloadResourcesHandler,
+		SecondLevelAgency: secondLevelAgencyHandler,
 	}
 }
 
@@ -215,6 +217,7 @@ var ProviderSet = wire.NewSet(
 	ProvideHelpCenterHandler,
 	NewVisitorAnalyticsHandler,
 	NewDownloadResourcesHandler,
+	NewSecondLevelAgencyHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

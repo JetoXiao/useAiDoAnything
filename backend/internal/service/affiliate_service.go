@@ -1203,6 +1203,15 @@ func (s *AffiliateService) AdminCreateSettlement(ctx context.Context, input Affi
 	if input.UserID <= 0 {
 		return nil, infraerrors.BadRequest("INVALID_USER", "invalid user")
 	}
+	if agencyRepo, ok := s.repo.(SecondLevelAgencyRepository); ok {
+		isSubagent, err := agencyRepo.IsSecondLevelAgentUser(ctx, input.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if isSubagent {
+			return nil, ErrAffiliatePartnerTransferUnsupported
+		}
+	}
 	if math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) || input.Amount <= 0 {
 		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "settlement amount must be greater than 0")
 	}

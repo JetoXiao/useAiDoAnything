@@ -61,6 +61,29 @@ func TestRateLimitService_HandleUpstreamError_OpenAI403FirstHitTempUnschedulable
 	require.True(t, blocker.until[0].After(time.Now()))
 }
 
+func TestRateLimitService_HandleUpstreamError_OpenAI403TransientEdgeDoesNotConsumeAuthBudget(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{counts: []int64{3}}
+	blocker := &runtimeBlockRecorder{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetOpenAI403CounterCache(counter)
+	service.SetAccountRuntimeBlocker(blocker)
+	account := &Account{ID: 303, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(), account, http.StatusForbidden, http.Header{},
+		[]byte(`<!doctype html><title>Just a moment...</title><div>Cloudflare challenge</div>`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 0, repo.setErrorCalls)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Contains(t, repo.lastTempReason, "transient edge 403")
+	require.Len(t, blocker.accounts, 1)
+	require.Equal(t, "openai_403_transient", blocker.reasons[0])
+	require.True(t, blocker.until[0].Before(time.Now().Add(2*time.Minute)))
+}
+
 func TestRateLimitService_HandleUpstreamError_OpenAI403ThresholdDisables(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	counter := &openAI403CounterCacheStub{counts: []int64{3}}

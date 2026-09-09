@@ -119,6 +119,116 @@ func NewAffiliateRepository(client *dbent.Client, _ *sql.DB) service.AffiliateRe
 	return &affiliateRepository{client: client}
 }
 
+func (r *affiliateRepository) GetAgencyCapability(ctx context.Context, rootID int64) (*service.SecondLevelAgencyCapability, error) {
+	rows, err := r.client.QueryContext(ctx, `SELECT root_partner_user_id, enabled, default_subagent_rate::double precision, max_subagent_rate::double precision, granted_by, granted_at, revoked_at FROM affiliate_agency_capabilities WHERE root_partner_user_id = $1`, rootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+	var out service.SecondLevelAgencyCapability
+	if err := rows.Scan(&out.RootPartnerUserID, &out.Enabled, &out.DefaultRate, &out.MaxRate, &out.GrantedBy, &out.GrantedAt, &out.RevokedAt); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (r *affiliateRepository) ListAgencyCapabilities(ctx context.Context) ([]service.SecondLevelAgencyCapability, error) {
+	rows, err := r.client.QueryContext(ctx, `SELECT root_partner_user_id, enabled, default_subagent_rate::double precision, max_subagent_rate::double precision, granted_by, granted_at, revoked_at FROM affiliate_agency_capabilities ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]service.SecondLevelAgencyCapability, 0)
+	for rows.Next() {
+		var item service.SecondLevelAgencyCapability
+		if err := rows.Scan(&item.RootPartnerUserID, &item.Enabled, &item.DefaultRate, &item.MaxRate, &item.GrantedBy, &item.GrantedAt, &item.RevokedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *affiliateRepository) SetAgencyCapability(ctx context.Context, input service.SecondLevelAgencyCapability) error {
+	_, err := r.client.ExecContext(ctx, `INSERT INTO affiliate_agency_capabilities (root_partner_user_id, enabled, default_subagent_rate, max_subagent_rate, granted_by, granted_at, revoked_at, revoke_reason, updated_at) VALUES ($1,$2,$3,$4,$5,CASE WHEN $2 THEN NOW() ELSE NULL END,CASE WHEN $2 THEN NULL ELSE NOW() END,CASE WHEN $2 THEN '' ELSE 'revoked by administrator' END,NOW()) ON CONFLICT (root_partner_user_id) DO UPDATE SET enabled=EXCLUDED.enabled, default_subagent_rate=EXCLUDED.default_subagent_rate, max_subagent_rate=EXCLUDED.max_subagent_rate, granted_by=EXCLUDED.granted_by, granted_at=EXCLUDED.granted_at, revoked_at=EXCLUDED.revoked_at, revoke_reason=EXCLUDED.revoke_reason, updated_at=NOW()`, input.RootPartnerUserID, input.Enabled, input.DefaultRate, input.MaxRate, input.GrantedBy)
+	return err
+}
+
+func (r *affiliateRepository) ListSecondLevelAgents(ctx context.Context, rootID int64) ([]service.SecondLevelAgent, error) {
+	rows, err := r.client.QueryContext(ctx, `SELECT sa.id, sa.root_partner_user_id, sa.subagent_user_id, COALESCE(u.email,''), COALESCE(u.username,''), sa.aff_code, sa.status, sa.commission_rate::double precision, COALESCE(ua.aff_count,0), sa.created_at FROM affiliate_subagents sa JOIN users u ON u.id=sa.subagent_user_id LEFT JOIN user_affiliates ua ON ua.user_id=sa.subagent_user_id WHERE sa.root_partner_user_id=$1 ORDER BY sa.created_at DESC, sa.id DESC`, rootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]service.SecondLevelAgent, 0)
+	for rows.Next() {
+		var item service.SecondLevelAgent
+		if err := rows.Scan(&item.ID, &item.RootPartnerUserID, &item.SubagentUserID, &item.Email, &item.Username, &item.AffCode, &item.Status, &item.CommissionRate, &item.InvitedCount, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *affiliateRepository) ListSecondLevelAgencyCandidates(ctx context.Context, rootID int64, search string) ([]service.SecondLevelAgencyCandidate, error) {
+	pattern := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
+	rows, err := r.client.QueryContext(ctx, `SELECT u.id, COALESCE(u.email,''), COALESCE(u.username,'') FROM users u WHERE u.deleted_at IS NULL AND u.status='active' AND u.role='user' AND u.id <> $1 AND (LOWER(u.email) LIKE $2 OR LOWER(u.username) LIKE $2 OR u.id::text LIKE $2) AND NOT EXISTS (SELECT 1 FROM affiliate_subagents sa WHERE sa.subagent_user_id=u.id) ORDER BY u.created_at DESC, u.id DESC LIMIT 20`, rootID, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]service.SecondLevelAgencyCandidate, 0)
+	for rows.Next() {
+		var item service.SecondLevelAgencyCandidate
+		if err := rows.Scan(&item.UserID, &item.Email, &item.Username); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *affiliateRepository) CreateSecondLevelAgent(ctx context.Context, input service.SecondLevelAgent) (*service.SecondLevelAgent, error) {
+	if input.AffCode == "" {
+		input.AffCode = "AG" + strings.ToUpper(fmt.Sprintf("%d", time.Now().UnixNano()))
+	}
+	rows, err := r.client.QueryContext(ctx, `INSERT INTO affiliate_subagents (root_partner_user_id, subagent_user_id, aff_code, status, commission_rate) VALUES ($1,$2,$3,'active',$4) RETURNING id, created_at`, input.RootPartnerUserID, input.SubagentUserID, input.AffCode, input.CommissionRate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+	if err := rows.Scan(&input.ID, &input.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &input, nil
+}
+
+func (r *affiliateRepository) SetSecondLevelAgentStatus(ctx context.Context, rootID, agentID int64, status string) error {
+	_, err := r.client.ExecContext(ctx, `UPDATE affiliate_subagents SET status=$1, disabled_at=CASE WHEN $1='disabled' THEN NOW() ELSE NULL END, updated_at=NOW() WHERE id=$2 AND root_partner_user_id=$3`, status, agentID, rootID)
+	return err
+}
+
+func (r *affiliateRepository) SetSecondLevelAgentCommissionRate(ctx context.Context, rootID, agentID int64, rate float64) error {
+	_, err := r.client.ExecContext(ctx, `UPDATE affiliate_subagents SET commission_rate=$1, updated_at=NOW() WHERE id=$2 AND root_partner_user_id=$3`, rate, agentID, rootID)
+	return err
+}
+
+func (r *affiliateRepository) IsSecondLevelAgentUser(ctx context.Context, userID int64) (bool, error) {
+	rows, err := r.client.QueryContext(ctx, `SELECT 1 FROM affiliate_subagents WHERE subagent_user_id=$1 LIMIT 1`, userID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	return rows.Next(), rows.Err()
+}
+
 func (r *affiliateRepository) EnsureUserAffiliate(ctx context.Context, userID int64) (*service.AffiliateSummary, error) {
 	if userID <= 0 {
 		return nil, service.ErrUserNotFound
@@ -129,7 +239,26 @@ func (r *affiliateRepository) EnsureUserAffiliate(ctx context.Context, userID in
 
 func (r *affiliateRepository) GetAffiliateByCode(ctx context.Context, code string) (*service.AffiliateSummary, error) {
 	client := clientFromContext(ctx, r.client)
-	return queryAffiliateByCode(ctx, client, code)
+	if summary, err := queryAffiliateByCode(ctx, client, code); err == nil {
+		return summary, nil
+	} else if !errors.Is(err, service.ErrAffiliateProfileNotFound) {
+		return nil, err
+	}
+	// A second-level agent owns a dedicated code in affiliate_subagents while
+	// still using the normal user_affiliates inviter relation for attribution.
+	rows, err := client.QueryContext(ctx, `SELECT sa.subagent_user_id, sa.aff_code, COALESCE(ua.aff_count,0), COALESCE(ua.aff_quota,0)::double precision, COALESCE(ua.aff_history_quota,0)::double precision, COALESCE(ua.partner_level,'none') FROM affiliate_subagents sa LEFT JOIN user_affiliates ua ON ua.user_id=sa.subagent_user_id WHERE sa.aff_code=$1 AND sa.status='active' LIMIT 1`, strings.ToUpper(strings.TrimSpace(code)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, service.ErrAffiliateProfileNotFound
+	}
+	var summary service.AffiliateSummary
+	if err := rows.Scan(&summary.UserID, &summary.AffCode, &summary.AffCount, &summary.AffQuota, &summary.AffHistoryQuota, &summary.PartnerLevel); err != nil {
+		return nil, err
+	}
+	return &summary, nil
 }
 
 func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID int64) (bool, error) {
@@ -177,6 +306,33 @@ func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, invite
 
 	var applied bool
 	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		// If the direct inviter is a second-level agent, split the existing
+		// platform rebate pool between the subagent and its first-level owner.
+		// The total amount remains unchanged and both ledger rows retain the
+		// historical rate snapshot for audit/reconciliation.
+		var rootID int64
+		var subRate float64
+		rows, lookupErr := txClient.QueryContext(txCtx, `SELECT root_partner_user_id, commission_rate::double precision FROM affiliate_subagents WHERE subagent_user_id=$1 AND status='active' LIMIT 1`, inviterID)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if rows.Next() {
+			if err := rows.Scan(&rootID, &subRate); err != nil {
+				_ = rows.Close()
+				return err
+			}
+		}
+		_ = rows.Close()
+		subAmount, rootAmount := amount, 0.0
+		ledgerLevel := int16(1)
+		if rootID > 0 && subRate > 0 {
+			ledgerLevel = 2
+			if subRate > 100 {
+				subRate = 100
+			}
+			subAmount = amount * subRate / 100
+			rootAmount = amount - subAmount
+		}
 		// freezeHours > 0: add to frozen quota; == 0: add to available quota directly
 		var updateSQL string
 		if freezeHours > 0 {
@@ -184,7 +340,7 @@ func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, invite
 		} else {
 			updateSQL = "UPDATE user_affiliates SET aff_quota = aff_quota + $1, aff_history_quota = aff_history_quota + $1, updated_at = NOW() WHERE user_id = $2"
 		}
-		res, err := txClient.ExecContext(txCtx, updateSQL, amount, inviterID)
+		res, err := txClient.ExecContext(txCtx, updateSQL, subAmount, inviterID)
 		if err != nil {
 			return err
 		}
@@ -194,18 +350,42 @@ func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, invite
 			return nil
 		}
 
+		ledgerInsert := func(userID int64, ledgerAmount float64, level int16, rootPartner *int64) error {
+			if ledgerAmount <= 0 {
+				return nil
+			}
+			if freezeHours > 0 {
+				_, err = txClient.ExecContext(txCtx, `INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, source_order_id, frozen_until, agency_level, root_partner_user_id, commission_rate_snapshot, root_commission_amount, created_at, updated_at) VALUES ($1, 'accrue', $2, $3, $4, NOW() + make_interval(hours => $5), $6, $7, $8, $9, NOW(), NOW())`, userID, ledgerAmount, inviteeUserID, nullableInt64Arg(sourceOrderID), freezeHours, level, rootPartner, subRate, rootAmount)
+			} else {
+				_, err = txClient.ExecContext(txCtx, `INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, source_order_id, agency_level, root_partner_user_id, commission_rate_snapshot, root_commission_amount, created_at, updated_at) VALUES ($1, 'accrue', $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`, userID, ledgerAmount, inviteeUserID, nullableInt64Arg(sourceOrderID), level, rootPartner, subRate, rootAmount)
+			}
+			return err
+		}
 		if freezeHours > 0 {
-			if _, err = txClient.ExecContext(txCtx, `
-INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, source_order_id, frozen_until, created_at, updated_at)
-VALUES ($1, 'accrue', $2, $3, $4, NOW() + make_interval(hours => $5), NOW(), NOW())`,
-				inviterID, amount, inviteeUserID, nullableInt64Arg(sourceOrderID), freezeHours); err != nil {
+			if err = ledgerInsert(inviterID, subAmount, ledgerLevel, func() *int64 {
+				if rootID > 0 {
+					return &rootID
+				}
+				return nil
+			}()); err != nil {
 				return fmt.Errorf("insert affiliate accrue ledger: %w", err)
 			}
 		} else {
-			if _, err = txClient.ExecContext(txCtx, `
-INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, source_order_id, created_at, updated_at)
-VALUES ($1, 'accrue', $2, $3, $4, NOW(), NOW())`, inviterID, amount, inviteeUserID, nullableInt64Arg(sourceOrderID)); err != nil {
+			if err = ledgerInsert(inviterID, subAmount, ledgerLevel, func() *int64 {
+				if rootID > 0 {
+					return &rootID
+				}
+				return nil
+			}()); err != nil {
 				return fmt.Errorf("insert affiliate accrue ledger: %w", err)
+			}
+		}
+		if rootID > 0 && rootAmount > 0 {
+			if _, err = txClient.ExecContext(txCtx, updateSQL, rootAmount, rootID); err != nil {
+				return err
+			}
+			if err = ledgerInsert(rootID, rootAmount, 1, &rootID); err != nil {
+				return fmt.Errorf("insert root affiliate accrue ledger: %w", err)
 			}
 		}
 

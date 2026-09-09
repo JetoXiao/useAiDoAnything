@@ -61,6 +61,49 @@ type UpdateAffiliateUserRequest struct {
 	ClearRebateRate bool `json:"clear_rebate_rate"`
 }
 
+type UpdateSecondLevelAgencyCapabilityRequest struct {
+	Enabled     bool    `json:"enabled"`
+	DefaultRate float64 `json:"default_subagent_rate"`
+	MaxRate     float64 `json:"max_subagent_rate"`
+}
+
+func (h *AffiliateHandler) UpdateSecondLevelAgencyCapability(c *gin.Context) {
+	rootID, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
+	if err != nil || rootID <= 0 {
+		response.BadRequest(c, "Invalid user_id")
+		return
+	}
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Unauthorized(c, "Admin not authenticated")
+		return
+	}
+	var req UpdateSecondLevelAgencyCapabilityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if err := h.affiliateService.SetSecondLevelAgencyCapability(c.Request.Context(), rootID, subject.UserID, req.Enabled, req.DefaultRate, req.MaxRate); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	capability, err := h.affiliateService.GetSecondLevelAgencyCapability(c.Request.Context(), rootID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, capability)
+}
+
+func (h *AffiliateHandler) ListSecondLevelAgencyCapabilities(c *gin.Context) {
+	items, err := h.affiliateService.ListSecondLevelAgencyCapabilities(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, items)
+}
+
 func (h *AffiliateHandler) UpdateUserSettings(c *gin.Context) {
 	userID, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
 	if err != nil || userID <= 0 {

@@ -81,6 +81,18 @@ func RegisterUserRoutes(
 			helpCenter.POST("/key-prompt/dismiss", h.HelpCenter.DismissKeyCreatedPrompt)
 		}
 
+		agency := authenticated.Group("/agency/second-level")
+		{
+			agency.GET("/status", h.SecondLevelAgency.Status)
+			agency.GET("/agents", h.SecondLevelAgency.List)
+			agency.GET("/candidates", h.SecondLevelAgency.Candidates)
+			agency.POST("/agents", h.SecondLevelAgency.Create)
+			agency.PUT("/agents/:id/status", h.SecondLevelAgency.SetStatus)
+			agency.PUT("/agents/:id/rate", h.SecondLevelAgency.SetRate)
+			agency.GET("/agents/:id/usage", h.SecondLevelAgency.Usage)
+			agency.GET("/agents/:id/rebates", h.SecondLevelAgency.Rebates)
+		}
+
 		// 用户可用分组（非管理员接口）
 		groups := authenticated.Group("/groups")
 		{

@@ -328,6 +328,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/affiliate/second-level',
+    name: 'SecondLevelAgency',
+    component: () => import('@/views/user/SecondLevelAgencyView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: '二级代理管理',
+      titleKey: 'nav.secondLevelAgency',
+      userMenuKey: 'second_level_agency'
+    }
+  },
+  {
     path: '/support-contact',
     name: 'SupportContact',
     component: () => import('@/views/user/SupportContactView.vue'),
@@ -798,6 +810,12 @@ const routes: RouteRecordRaw[] = [
       titleKey: 'nav.affiliateApplications',
       descriptionKey: 'admin.affiliates.applicationsDescription'
     }
+  },
+  {
+    path: '/admin/affiliates/agencies',
+    name: 'AdminSecondLevelAgency',
+    component: () => import('@/views/admin/affiliates/AdminSecondLevelAgencyView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, adminMenuKey: 'admin_affiliate_agencies', title: '二级代理权限', titleKey: 'nav.secondLevelAgency' }
   },
   {
     path: '/admin/affiliates/invites',

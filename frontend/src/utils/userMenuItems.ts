@@ -17,6 +17,7 @@ export const DEFAULT_USER_MENU_ITEMS = [
 export type DefaultUserMenuItem = typeof DEFAULT_USER_MENU_ITEMS[number]
 export const OPTIONAL_USER_MENU_ITEMS = [
   'affiliate_usage',
+  'second_level_agency',
 ] as const
 
 export type UserMenuItem = DefaultUserMenuItem | typeof OPTIONAL_USER_MENU_ITEMS[number]
@@ -35,6 +36,7 @@ export const USER_MENU_PATHS: Record<UserMenuItem, string> = {
   redeem: '/redeem',
   affiliate: '/affiliate',
   affiliate_usage: '/affiliate/usage',
+  second_level_agency: '/affiliate/second-level',
   support_contact: '/support-contact',
   profile: '/profile',
 }
