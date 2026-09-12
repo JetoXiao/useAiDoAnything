@@ -98,9 +98,9 @@ function partnerLabel(row: SecondLevelAgencyCapability) {
 function statusLabel(row: SecondLevelAgencyCapability) { if (!row.configured) return '未授权'; return row.enabled ? '已授权' : '已关闭' }
 function edit(row: SecondLevelAgencyCapability) {
   editing.value = row
-  // Opening the dialog must preserve the current authorization state.
-  // Revocation is an explicit action: uncheck the switch and save.
-  form.enabled = row.enabled
+  // "授权" opens ready-to-grant; existing grants stay enabled until the admin
+  // explicitly unchecks this option and saves.
+  form.enabled = true
   form.default_subagent_rate = row.default_subagent_rate
   form.max_subagent_rate = row.max_subagent_rate
 }
