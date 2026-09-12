@@ -138,3 +138,6 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+
+# 运维私密配置（含 SMTP 密码）
+ops/smtp-config-local.txt

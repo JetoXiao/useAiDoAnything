@@ -219,6 +219,7 @@ func isUserMenuPermissionKey(item string) bool {
 		"redeem",
 		"affiliate",
 		"affiliate_usage",
+		"second_level_agency",
 		"support_contact",
 		"profile":
 		return true

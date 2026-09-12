@@ -25,6 +25,31 @@ const (
 
 var affiliateCodeCharset = []byte("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
 
+const listAgencyCapabilitiesSQL = `
+SELECT u.id,
+       COALESCE(u.email, ''),
+       COALESCE(u.username, ''),
+       COALESCE(NULLIF(ua.partner_level, ''), 'none'),
+       COALESCE(ua.aff_code, ''),
+       ua.aff_rebate_rate_percent,
+       c.root_partner_user_id IS NOT NULL,
+       COALESCE(c.enabled, FALSE),
+       COALESCE(c.default_subagent_rate, 30)::double precision,
+       COALESCE(c.max_subagent_rate, 50)::double precision,
+       c.granted_by,
+       c.granted_at,
+       c.revoked_at
+FROM users u
+JOIN user_affiliates ua ON ua.user_id = u.id
+LEFT JOIN affiliate_agency_capabilities c ON c.root_partner_user_id = u.id
+WHERE u.deleted_at IS NULL
+  AND u.status = 'active'
+  AND (
+      COALESCE(NULLIF(ua.partner_level, ''), 'none') <> 'none'
+      OR ua.aff_rebate_rate_percent IS NOT NULL
+  )
+ORDER BY c.updated_at DESC NULLS LAST, ua.updated_at DESC, u.id DESC`
+
 const affiliateUsageExchangeRateCTE = `exchange_rate AS (
     SELECT COALESCE(
         NULLIF((
@@ -136,7 +161,7 @@ func (r *affiliateRepository) GetAgencyCapability(ctx context.Context, rootID in
 }
 
 func (r *affiliateRepository) ListAgencyCapabilities(ctx context.Context) ([]service.SecondLevelAgencyCapability, error) {
-	rows, err := r.client.QueryContext(ctx, `SELECT root_partner_user_id, enabled, default_subagent_rate::double precision, max_subagent_rate::double precision, granted_by, granted_at, revoked_at FROM affiliate_agency_capabilities ORDER BY updated_at DESC`)
+	rows, err := r.client.QueryContext(ctx, listAgencyCapabilitiesSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -144,8 +169,27 @@ func (r *affiliateRepository) ListAgencyCapabilities(ctx context.Context) ([]ser
 	items := make([]service.SecondLevelAgencyCapability, 0)
 	for rows.Next() {
 		var item service.SecondLevelAgencyCapability
-		if err := rows.Scan(&item.RootPartnerUserID, &item.Enabled, &item.DefaultRate, &item.MaxRate, &item.GrantedBy, &item.GrantedAt, &item.RevokedAt); err != nil {
+		var rebate sql.NullFloat64
+		if err := rows.Scan(
+			&item.RootPartnerUserID,
+			&item.Email,
+			&item.Username,
+			&item.PartnerLevel,
+			&item.AffCode,
+			&rebate,
+			&item.Configured,
+			&item.Enabled,
+			&item.DefaultRate,
+			&item.MaxRate,
+			&item.GrantedBy,
+			&item.GrantedAt,
+			&item.RevokedAt,
+		); err != nil {
 			return nil, err
+		}
+		if rebate.Valid {
+			rate := rebate.Float64
+			item.AffRebateRatePercent = &rate
 		}
 		items = append(items, item)
 	}

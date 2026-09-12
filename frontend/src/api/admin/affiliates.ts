@@ -27,6 +27,12 @@ export interface AffiliateAdminEntry {
 
 export interface SecondLevelAgencyCapability {
   root_partner_user_id: number
+  email?: string
+  username?: string
+  partner_level?: AffiliatePartnerLevel
+  aff_code?: string
+  aff_rebate_rate_percent?: number | null
+  configured: boolean
   enabled: boolean
   default_subagent_rate: number
   max_subagent_rate: number

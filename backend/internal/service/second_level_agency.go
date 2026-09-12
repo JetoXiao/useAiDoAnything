@@ -15,13 +15,19 @@ var (
 )
 
 type SecondLevelAgencyCapability struct {
-	RootPartnerUserID int64      `json:"root_partner_user_id"`
-	Enabled           bool       `json:"enabled"`
-	DefaultRate       float64    `json:"default_subagent_rate"`
-	MaxRate           float64    `json:"max_subagent_rate"`
-	GrantedBy         *int64     `json:"granted_by,omitempty"`
-	GrantedAt         *time.Time `json:"granted_at,omitempty"`
-	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
+	RootPartnerUserID    int64      `json:"root_partner_user_id"`
+	Email                string     `json:"email,omitempty"`
+	Username             string     `json:"username,omitempty"`
+	PartnerLevel         string     `json:"partner_level,omitempty"`
+	AffCode              string     `json:"aff_code,omitempty"`
+	AffRebateRatePercent *float64   `json:"aff_rebate_rate_percent,omitempty"`
+	Configured           bool       `json:"configured"`
+	Enabled              bool       `json:"enabled"`
+	DefaultRate          float64    `json:"default_subagent_rate"`
+	MaxRate              float64    `json:"max_subagent_rate"`
+	GrantedBy            *int64     `json:"granted_by,omitempty"`
+	GrantedAt            *time.Time `json:"granted_at,omitempty"`
+	RevokedAt            *time.Time `json:"revoked_at,omitempty"`
 }
 
 type SecondLevelAgent struct {
@@ -76,8 +82,9 @@ func (s *AffiliateService) GetSecondLevelAgencyCapability(ctx context.Context, u
 		return nil, err
 	}
 	if capability == nil {
-		return &SecondLevelAgencyCapability{RootPartnerUserID: userID, DefaultRate: 30, MaxRate: 50}, nil
+		return &SecondLevelAgencyCapability{RootPartnerUserID: userID, Configured: false, DefaultRate: 30, MaxRate: 50}, nil
 	}
+	capability.Configured = true
 	return capability, nil
 }
 
@@ -284,10 +291,20 @@ func (s *AffiliateService) requireFirstLevelPartner(ctx context.Context, userID 
 	if err != nil {
 		return err
 	}
-	if summary == nil || AffiliatePartnerLevelRank(summary.PartnerLevel) <= 0 {
+	if summary == nil || !isFirstLevelPartner(summary) {
 		return ErrSecondLevelAgencyDisabled
 	}
 	return nil
+}
+
+// isFirstLevelPartner is the eligibility rule for first-level agency features.
+// An administrator-assigned special rebate is an explicit first-level partner
+// designation even when it does not match one of the named partner tiers.
+func isFirstLevelPartner(summary *AffiliateSummary) bool {
+	if summary == nil {
+		return false
+	}
+	return AffiliatePartnerLevelRank(summary.PartnerLevel) > 0 || summary.AffRebateRatePercent != nil
 }
 
 func IsSecondLevelAgencyError(err error) bool { return errors.Is(err, ErrSecondLevelAgencyDisabled) }

@@ -21,6 +21,18 @@ func TestAffiliateUserOverviewSQLIncludesMaturedFrozenQuota(t *testing.T) {
 	require.Contains(t, query, "frozen_until <= NOW()")
 }
 
+func TestListAgencyCapabilitiesIncludesAllFirstLevelPartners(t *testing.T) {
+	query := compactSQLForTest(listAgencyCapabilitiesSQL)
+
+	require.Contains(t, query, "FROM users u")
+	require.Contains(t, query, "JOIN user_affiliates ua ON ua.user_id = u.id")
+	require.Contains(t, query, "LEFT JOIN affiliate_agency_capabilities c ON c.root_partner_user_id = u.id")
+	require.Contains(t, query, "COALESCE(NULLIF(ua.partner_level, ''), 'none') <> 'none'")
+	require.Contains(t, query, "ua.aff_rebate_rate_percent IS NOT NULL")
+	require.Contains(t, query, "c.root_partner_user_id IS NOT NULL")
+	require.Contains(t, query, "COALESCE(c.enabled, FALSE)")
+}
+
 func TestAffiliateRecordQueriesUseLedgerAuditFields(t *testing.T) {
 	source, err := os.ReadFile("affiliate_repo.go")
 	require.NoError(t, err)

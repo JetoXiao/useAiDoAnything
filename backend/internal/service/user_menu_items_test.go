@@ -13,3 +13,8 @@ func TestUserMenuItemsIncludeHelpCenter(t *testing.T) {
 	normalized := ParseUserMenuItems(`["keys","help-center","support"]`)
 	require.Equal(t, []string{"api_keys", "help_center", "support_contact"}, normalized)
 }
+
+func TestNormalizeUserMenuPermissionsIncludesSecondLevelAgency(t *testing.T) {
+	permissions := NormalizeUserMenuPermissions([]string{"second_level_agency", "admin_users"})
+	require.Equal(t, []string{"second_level_agency"}, permissions)
+}
