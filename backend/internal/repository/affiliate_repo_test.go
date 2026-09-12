@@ -33,6 +33,17 @@ func TestListAgencyCapabilitiesIncludesAllFirstLevelPartners(t *testing.T) {
 	require.Contains(t, query, "COALESCE(c.enabled, FALSE)")
 }
 
+func TestSetAgencyCapabilitySynchronizesSecondLevelAgencyMenuPermission(t *testing.T) {
+	source, err := os.ReadFile("affiliate_repo.go")
+	require.NoError(t, err)
+	text := string(source)
+
+	require.Contains(t, text, "syncSecondLevelAgencyMenuPermission")
+	require.Contains(t, text, "affiliate_agency_capabilities WHERE root_partner_user_id = $1")
+	require.Contains(t, text, "admin_menu_permissions")
+	require.Contains(t, text, "second_level_agency")
+}
+
 func TestAffiliateRecordQueriesUseLedgerAuditFields(t *testing.T) {
 	source, err := os.ReadFile("affiliate_repo.go")
 	require.NoError(t, err)

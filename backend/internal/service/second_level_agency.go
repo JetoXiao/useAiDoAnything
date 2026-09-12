@@ -104,7 +104,16 @@ func (s *AffiliateService) SetSecondLevelAgencyCapability(ctx context.Context, r
 	if rootID <= 0 || adminID <= 0 || defaultRate < 0 || maxRate < defaultRate || maxRate > 100 {
 		return ErrSecondLevelAgencyInvalid
 	}
-	return repo.SetAgencyCapability(ctx, SecondLevelAgencyCapability{RootPartnerUserID: rootID, Enabled: enabled, DefaultRate: defaultRate, MaxRate: maxRate, GrantedBy: &adminID})
+	if err := repo.SetAgencyCapability(ctx, SecondLevelAgencyCapability{RootPartnerUserID: rootID, Enabled: enabled, DefaultRate: defaultRate, MaxRate: maxRate, GrantedBy: &adminID}); err != nil {
+		return err
+	}
+	// The second-level agency page is system-managed: granting or revoking the
+	// capability also grants or revokes the user's page permission. Invalidate
+	// the auth snapshot so the sidebar and route guard update immediately.
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, rootID)
+	}
+	return nil
 }
 
 func (s *AffiliateService) ListSecondLevelAgents(ctx context.Context, rootID int64) ([]SecondLevelAgent, error) {

@@ -139,6 +139,9 @@ function normalizeUserMenuItemKey(value: unknown): UserMenuItem | undefined {
     case 'affiliate_usage':
     case 'affiliate-usage':
       return 'affiliate_usage'
+    case 'second_level_agency':
+    case 'second-level-agency':
+      return 'second_level_agency'
     case 'support_contact':
     case 'support':
     case 'after_sales':

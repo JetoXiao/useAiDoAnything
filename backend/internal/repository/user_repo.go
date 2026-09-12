@@ -201,6 +201,31 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 	}
 	defer releaseEmailLock()
 
+	permissions := withoutSecondLevelAgencyMenuPermission(userIn.AdminMenuPermissions)
+	agencyRows, err := txClient.QueryContext(txCtx, `SELECT enabled FROM affiliate_agency_capabilities WHERE root_partner_user_id = $1`, userIn.ID)
+	if err != nil {
+		// Older/test databases may not have the optional second-level agency
+		// migration yet; in that case preserve the normal user-update path.
+		if !isMissingAgencyCapabilityTableError(err) {
+			return err
+		}
+	} else {
+		defer agencyRows.Close()
+		if agencyRows.Next() {
+			var enabled bool
+			if err := agencyRows.Scan(&enabled); err != nil {
+				return err
+			}
+			if enabled && userIn.Role == service.RoleUser {
+				permissions = append(permissions, "second_level_agency")
+			}
+		}
+		if err := agencyRows.Err(); err != nil {
+			return err
+		}
+	}
+	userIn.AdminMenuPermissions = service.NormalizeAdminMenuPermissions(permissions)
+
 	if err := ensureNormalizedEmailAvailableWithClient(txCtx, txClient, userIn.ID, userIn.Email); err != nil {
 		return err
 	}
@@ -261,6 +286,32 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 
 	userIn.UpdatedAt = updated.UpdatedAt
 	return nil
+}
+
+func withoutSecondLevelAgencyMenuPermission(items []string) []string {
+	normalized := service.NormalizeAdminMenuPermissions(items)
+	if len(normalized) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(normalized))
+	for _, item := range normalized {
+		if item != "second_level_agency" {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func isMissingAgencyCapabilityTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such table") ||
+		strings.Contains(message, "relation \"affiliate_agency_capabilities\" does not exist")
 }
 
 func ensureEmailAuthIdentityWithClient(ctx context.Context, client *dbent.Client, userID int64, email string, source string) error {

@@ -3134,6 +3134,7 @@ export default {
         adminMenuPermissions: '可访问菜单',
         readonlyAdminMenuPermissionsHint: '勾选只读管理员可查看的后台菜单；后台创建、编辑和删除操作仍会被禁止。',
         userMenuPermissionsHint: '勾选可为该普通用户单独开放的用户菜单。',
+        secondLevelAgencyPermissionManagedHint: '二级代理管理权限由“二级代理权限”页面自动管理，请勿在此处设置。',
         adminMenus: '后台菜单',
         userMenus: '用户菜单',
         balanceLabel: '余额',

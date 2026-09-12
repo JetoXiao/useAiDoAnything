@@ -197,7 +197,50 @@ func (r *affiliateRepository) ListAgencyCapabilities(ctx context.Context) ([]ser
 }
 
 func (r *affiliateRepository) SetAgencyCapability(ctx context.Context, input service.SecondLevelAgencyCapability) error {
-	_, err := r.client.ExecContext(ctx, `INSERT INTO affiliate_agency_capabilities (root_partner_user_id, enabled, default_subagent_rate, max_subagent_rate, granted_by, granted_at, revoked_at, revoke_reason, updated_at) VALUES ($1,$2,$3,$4,$5,CASE WHEN $2 THEN NOW() ELSE NULL END,CASE WHEN $2 THEN NULL ELSE NOW() END,CASE WHEN $2 THEN '' ELSE 'revoked by administrator' END,NOW()) ON CONFLICT (root_partner_user_id) DO UPDATE SET enabled=EXCLUDED.enabled, default_subagent_rate=EXCLUDED.default_subagent_rate, max_subagent_rate=EXCLUDED.max_subagent_rate, granted_by=EXCLUDED.granted_by, granted_at=EXCLUDED.granted_at, revoked_at=EXCLUDED.revoked_at, revoke_reason=EXCLUDED.revoke_reason, updated_at=NOW()`, input.RootPartnerUserID, input.Enabled, input.DefaultRate, input.MaxRate, input.GrantedBy)
+	return r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		if _, err := txClient.ExecContext(txCtx, `INSERT INTO affiliate_agency_capabilities (root_partner_user_id, enabled, default_subagent_rate, max_subagent_rate, granted_by, granted_at, revoked_at, revoke_reason, updated_at) VALUES ($1,$2,$3,$4,$5,CASE WHEN $2 THEN NOW() ELSE NULL END,CASE WHEN $2 THEN NULL ELSE NOW() END,CASE WHEN $2 THEN '' ELSE 'revoked by administrator' END,NOW()) ON CONFLICT (root_partner_user_id) DO UPDATE SET enabled=EXCLUDED.enabled, default_subagent_rate=EXCLUDED.default_subagent_rate, max_subagent_rate=EXCLUDED.max_subagent_rate, granted_by=EXCLUDED.granted_by, granted_at=EXCLUDED.granted_at, revoked_at=EXCLUDED.revoked_at, revoke_reason=EXCLUDED.revoke_reason, updated_at=NOW()`, input.RootPartnerUserID, input.Enabled, input.DefaultRate, input.MaxRate, input.GrantedBy); err != nil {
+			return err
+		}
+		return syncSecondLevelAgencyMenuPermission(txCtx, txClient, input.RootPartnerUserID, input.Enabled)
+	})
+}
+
+// syncSecondLevelAgencyMenuPermission keeps the user-facing route permission
+// in lockstep with the administrator's agency capability toggle. This is
+// intentionally persisted beside the capability so generic user updates
+// cannot leave the two settings out of sync.
+func syncSecondLevelAgencyMenuPermission(ctx context.Context, client *dbent.Client, userID int64, enabled bool) error {
+	rows, err := client.QueryContext(ctx, `SELECT role, admin_menu_permissions FROM users WHERE id = $1 FOR UPDATE`, userID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return service.ErrUserNotFound
+	}
+	var role, raw string
+	if err := rows.Scan(&role, &raw); err != nil {
+		return err
+	}
+	var items []string
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &items)
+	}
+	items = service.NormalizeAdminMenuPermissions(items)
+	filtered := make([]string, 0, len(items)+1)
+	for _, item := range items {
+		if item != "second_level_agency" {
+			filtered = append(filtered, item)
+		}
+	}
+	if enabled && role == service.RoleUser {
+		filtered = append(filtered, "second_level_agency")
+	}
+	encoded, err := json.Marshal(service.NormalizeAdminMenuPermissions(filtered))
+	if err != nil {
+		return err
+	}
+	_, err = client.ExecContext(ctx, `UPDATE users SET admin_menu_permissions = $1, updated_at = NOW() WHERE id = $2`, string(encoded), userID)
 	return err
 }
 

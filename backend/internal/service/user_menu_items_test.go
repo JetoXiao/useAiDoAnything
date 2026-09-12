@@ -18,3 +18,8 @@ func TestNormalizeUserMenuPermissionsIncludesSecondLevelAgency(t *testing.T) {
 	permissions := NormalizeUserMenuPermissions([]string{"second_level_agency", "admin_users"})
 	require.Equal(t, []string{"second_level_agency"}, permissions)
 }
+
+func TestWithoutManagedUserMenuPermissionsExcludesSecondLevelAgency(t *testing.T) {
+	permissions := withoutManagedUserMenuPermissions([]string{"affiliate_usage", "second_level_agency", "custom:user:99"})
+	require.Equal(t, []string{"affiliate_usage", "custom:user:99"}, permissions)
+}

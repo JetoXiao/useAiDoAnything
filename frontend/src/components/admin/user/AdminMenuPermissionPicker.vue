@@ -6,6 +6,9 @@
         <p class="text-xs text-gray-500 dark:text-dark-400">
           {{ t(role === 'sub_admin' ? 'admin.users.form.readonlyAdminMenuPermissionsHint' : 'admin.users.form.userMenuPermissionsHint') }}
         </p>
+        <p v-if="role === 'user'" class="mt-1 text-xs text-primary-600 dark:text-primary-400">
+          {{ t('admin.users.form.secondLevelAgencyPermissionManagedHint') }}
+        </p>
       </div>
       <div class="flex gap-2">
         <button type="button" class="btn btn-secondary px-3 py-1 text-xs" @click="selectAll">
@@ -122,7 +125,9 @@ const userLabelKeys: Record<UserMenuItem, string> = {
 }
 
 const adminOptions = computed(() => ADMIN_MENU_ITEMS.map((key) => ({ key, label: t(adminLabelKeys[key]) })))
-const userPermissionItems = computed(() => [...DEFAULT_USER_MENU_ITEMS, ...OPTIONAL_USER_MENU_ITEMS] as UserMenuItem[])
+// 二级代理页面权限由“二级代理权限”页面自动托管，不能在用户管理中手动修改。
+const userPermissionItems = computed(() => [...DEFAULT_USER_MENU_ITEMS, ...OPTIONAL_USER_MENU_ITEMS]
+  .filter((key) => key !== 'second_level_agency') as UserMenuItem[])
 const userOptions = computed(() => userPermissionItems.value.map((key) => ({ key, label: t(userLabelKeys[key]) })))
 const allKeys = computed<AdminPermissionKey[]>(() => props.role === 'sub_admin'
   ? [...ADMIN_MENU_ITEMS]

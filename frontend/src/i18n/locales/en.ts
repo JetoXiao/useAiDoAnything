@@ -3034,6 +3034,7 @@ export default {
         adminMenuPermissions: 'Accessible menus',
         readonlyAdminMenuPermissionsHint: 'Select the admin menus this read-only administrator can view. Admin create, edit, and delete actions remain blocked.',
         userMenuPermissionsHint: 'Select user menus that are individually enabled for this regular user.',
+        secondLevelAgencyPermissionManagedHint: 'Second-level agency access is managed automatically from the agency permissions page.',
         adminMenus: 'Admin menus',
         userMenus: 'User menus',
         partnerLevel: 'Partner Level',

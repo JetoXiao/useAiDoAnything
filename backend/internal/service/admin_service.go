@@ -688,7 +688,7 @@ func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInpu
 	if err != nil {
 		return nil, err
 	}
-	permissions := NormalizeMenuPermissionsForRole(role, input.AdminMenuPermissions)
+	permissions := withoutManagedUserMenuPermissions(NormalizeMenuPermissionsForRole(role, input.AdminMenuPermissions))
 	user := &User{
 		Email:                            input.Email,
 		Username:                         input.Username,
@@ -801,7 +801,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 		user.AllowedGroups = *input.AllowedGroups
 	}
 	if input.AdminMenuPermissions != nil {
-		user.AdminMenuPermissions = NormalizeAdminMenuPermissions(*input.AdminMenuPermissions)
+		user.AdminMenuPermissions = withoutManagedUserMenuPermissions(NormalizeAdminMenuPermissions(*input.AdminMenuPermissions))
 	}
 	user.AdminMenuPermissions = NormalizeMenuPermissionsForRole(user.Role, user.AdminMenuPermissions)
 
@@ -849,6 +849,26 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	}
 
 	return user, nil
+}
+
+// second_level_agency is controlled by the second-level agency authorization
+// page, not by the generic user editor. The repository re-applies the
+// capability state as a final guard when persisting a user.
+func withoutManagedUserMenuPermissions(items []string) []string {
+	normalized := NormalizeAdminMenuPermissions(items)
+	if len(normalized) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(normalized))
+	for _, item := range normalized {
+		if item != "second_level_agency" {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *adminServiceImpl) DeleteUser(ctx context.Context, id int64) error {
