@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 var (
 	ErrSecondLevelAgencyDisabled = infraerrors.Forbidden("SECOND_LEVEL_AGENCY_DISABLED", "second-level agency is not enabled")
 	ErrSecondLevelAgencyInvalid  = infraerrors.BadRequest("SECOND_LEVEL_AGENCY_INVALID", "invalid second-level agency")
+	ErrSecondLevelSettlementOver = infraerrors.BadRequest("SECOND_LEVEL_SETTLEMENT_EXCEEDS_PENDING", "settlement amount exceeds pending cashback")
 )
 
 type SecondLevelAgencyCapability struct {
@@ -40,6 +42,9 @@ type SecondLevelAgent struct {
 	Status            string    `json:"status"`
 	CommissionRate    float64   `json:"commission_rate"`
 	InvitedCount      int       `json:"invited_count"`
+	CashbackDue       float64   `json:"cashback_due"`
+	CashbackSettled   float64   `json:"cashback_settled"`
+	CashbackPending   float64   `json:"cashback_pending"`
 	CreatedAt         time.Time `json:"created_at"`
 }
 
@@ -47,6 +52,16 @@ type SecondLevelAgencyCandidate struct {
 	UserID   int64  `json:"user_id"`
 	Email    string `json:"email"`
 	Username string `json:"username"`
+}
+
+// SecondLevelCashbackSummary describes the portion of the affiliate pool that
+// belongs to a second-level agent and is therefore payable by its first-level
+// owner. The values are based on the agency-level ledger split, not on the
+// agent's own usage/rebate calculation.
+type SecondLevelCashbackSummary struct {
+	TotalDue     float64 `json:"total_due"`
+	TotalSettled float64 `json:"total_settled"`
+	TotalPending float64 `json:"total_pending"`
 }
 
 type SecondLevelAgencyRepository interface {
@@ -59,6 +74,13 @@ type SecondLevelAgencyRepository interface {
 	SetSecondLevelAgentStatus(context.Context, int64, int64, string) error
 	SetSecondLevelAgentCommissionRate(context.Context, int64, int64, float64) error
 	IsSecondLevelAgentUser(context.Context, int64) (bool, error)
+}
+
+// secondLevelCashbackRepository is intentionally optional so existing
+// affiliate repository test doubles and alternate implementations do not need
+// to grow a method that is only used by the agency dashboard.
+type secondLevelCashbackRepository interface {
+	GetSecondLevelCashbackSummary(context.Context, int64, AffiliateUsageFilter) (SecondLevelCashbackSummary, error)
 }
 
 func (s *AffiliateService) secondLevelRepo() (SecondLevelAgencyRepository, error) {
@@ -274,6 +296,92 @@ func (s *AffiliateService) ListSecondLevelUsage(ctx context.Context, rootID, age
 	}
 	filter.InviterOnly = true
 	return s.AdminListUsageDailyRecords(ctx, filter)
+}
+
+func (s *AffiliateService) GetSecondLevelCashbackSummary(ctx context.Context, rootID, agentID int64, filter AffiliateUsageFilter) (SecondLevelCashbackSummary, error) {
+	owned, err := s.secondLevelAgentOwned(ctx, rootID, agentID)
+	if err != nil {
+		return SecondLevelCashbackSummary{}, err
+	}
+	if !owned {
+		return SecondLevelCashbackSummary{}, ErrSecondLevelAgencyInvalid
+	}
+
+	agents, err := s.ListSecondLevelAgents(ctx, rootID)
+	if err != nil {
+		return SecondLevelCashbackSummary{}, err
+	}
+	var subagentID int64
+	for _, agent := range agents {
+		if agent.ID == agentID {
+			subagentID = agent.SubagentUserID
+			break
+		}
+	}
+	if subagentID <= 0 {
+		return SecondLevelCashbackSummary{}, ErrSecondLevelAgencyInvalid
+	}
+
+	repo, ok := s.repo.(secondLevelCashbackRepository)
+	if !ok {
+		return SecondLevelCashbackSummary{}, infraerrors.ServiceUnavailable("SECOND_LEVEL_AGENCY_UNAVAILABLE", "second-level agency storage unavailable")
+	}
+	return repo.GetSecondLevelCashbackSummary(ctx, subagentID, filter)
+}
+
+func (s *AffiliateService) CreateSecondLevelSettlement(ctx context.Context, rootID, agentID int64, input AffiliateSettlementInput) (*AffiliateSettlementRecord, error) {
+	if s == nil || s.repo == nil {
+		return nil, infraerrors.ServiceUnavailable("SERVICE_UNAVAILABLE", "affiliate service unavailable")
+	}
+	if rootID <= 0 || agentID <= 0 {
+		return nil, ErrSecondLevelAgencyInvalid
+	}
+	if err := s.requireFirstLevelPartner(ctx, rootID); err != nil {
+		return nil, err
+	}
+	capability, err := s.GetSecondLevelAgencyCapability(ctx, rootID)
+	if err != nil {
+		return nil, err
+	}
+	if capability == nil || !capability.Enabled {
+		return nil, ErrSecondLevelAgencyDisabled
+	}
+
+	agents, err := s.ListSecondLevelAgents(ctx, rootID)
+	if err != nil {
+		return nil, err
+	}
+	var subagentID int64
+	for _, agent := range agents {
+		if agent.ID == agentID {
+			subagentID = agent.SubagentUserID
+			break
+		}
+	}
+	if subagentID <= 0 {
+		return nil, ErrSecondLevelAgencyInvalid
+	}
+	if math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) || input.Amount <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_AMOUNT", "settlement amount must be greater than 0")
+	}
+	if input.SettledOn.IsZero() {
+		return nil, infraerrors.BadRequest("INVALID_SETTLED_ON", "settlement date is required")
+	}
+	pending, err := s.GetSecondLevelCashbackSummary(ctx, rootID, agentID, AffiliateUsageFilter{})
+	if err != nil {
+		return nil, err
+	}
+	if input.Amount > pending.TotalPending+1e-8 {
+		return nil, ErrSecondLevelSettlementOver
+	}
+	input.UserID = subagentID
+	input.CreatedBy = rootID
+	input.Amount = roundTo(input.Amount, 8)
+	input.Note = strings.TrimSpace(input.Note)
+	if len(input.Note) > 1000 {
+		input.Note = input.Note[:1000]
+	}
+	return s.repo.CreateAffiliateSettlement(ctx, input)
 }
 
 func (s *AffiliateService) ListSecondLevelRebates(ctx context.Context, rootID, agentID int64, filter AffiliateRecordFilter) ([]AffiliateRebateRecord, int64, error) {

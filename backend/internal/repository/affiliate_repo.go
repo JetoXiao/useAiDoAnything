@@ -245,7 +245,36 @@ func syncSecondLevelAgencyMenuPermission(ctx context.Context, client *dbent.Clie
 }
 
 func (r *affiliateRepository) ListSecondLevelAgents(ctx context.Context, rootID int64) ([]service.SecondLevelAgent, error) {
-	rows, err := r.client.QueryContext(ctx, `SELECT sa.id, sa.root_partner_user_id, sa.subagent_user_id, COALESCE(u.email,''), COALESCE(u.username,''), sa.aff_code, sa.status, sa.commission_rate::double precision, COALESCE(ua.aff_count,0), sa.created_at FROM affiliate_subagents sa JOIN users u ON u.id=sa.subagent_user_id LEFT JOIN user_affiliates ua ON ua.user_id=sa.subagent_user_id WHERE sa.root_partner_user_id=$1 ORDER BY sa.created_at DESC, sa.id DESC`, rootID)
+	rows, err := r.client.QueryContext(ctx, `
+SELECT sa.id,
+       sa.root_partner_user_id,
+       sa.subagent_user_id,
+       COALESCE(u.email, ''),
+       COALESCE(u.username, ''),
+       sa.aff_code,
+       sa.status,
+       sa.commission_rate::double precision,
+       COALESCE(ua.aff_count, 0),
+       COALESCE((
+           SELECT SUM(ual.amount)
+           FROM user_affiliate_ledger ual
+           WHERE ual.user_id = sa.subagent_user_id
+             AND ual.action = 'accrue'
+             AND ual.agency_level = 2
+             AND ual.source_order_id IS NOT NULL
+       ), 0)::double precision,
+       COALESCE((
+           SELECT SUM(uas.amount)
+           FROM user_affiliate_settlements uas
+           WHERE uas.user_id = sa.subagent_user_id
+             AND uas.amount > 0
+       ), 0)::double precision,
+       sa.created_at
+FROM affiliate_subagents sa
+JOIN users u ON u.id = sa.subagent_user_id
+LEFT JOIN user_affiliates ua ON ua.user_id = sa.subagent_user_id
+WHERE sa.root_partner_user_id = $1
+ORDER BY sa.created_at DESC, sa.id DESC`, rootID)
 	if err != nil {
 		return nil, err
 	}
@@ -253,9 +282,23 @@ func (r *affiliateRepository) ListSecondLevelAgents(ctx context.Context, rootID 
 	items := make([]service.SecondLevelAgent, 0)
 	for rows.Next() {
 		var item service.SecondLevelAgent
-		if err := rows.Scan(&item.ID, &item.RootPartnerUserID, &item.SubagentUserID, &item.Email, &item.Username, &item.AffCode, &item.Status, &item.CommissionRate, &item.InvitedCount, &item.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&item.ID,
+			&item.RootPartnerUserID,
+			&item.SubagentUserID,
+			&item.Email,
+			&item.Username,
+			&item.AffCode,
+			&item.Status,
+			&item.CommissionRate,
+			&item.InvitedCount,
+			&item.CashbackDue,
+			&item.CashbackSettled,
+			&item.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
+		item.CashbackPending = math.Max(item.CashbackDue-item.CashbackSettled, 0)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -412,8 +455,11 @@ func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, invite
 		_ = rows.Close()
 		subAmount, rootAmount := amount, 0.0
 		ledgerLevel := int16(1)
-		if rootID > 0 && subRate > 0 {
+		if rootID > 0 {
 			ledgerLevel = 2
+			if subRate < 0 {
+				subRate = 0
+			}
 			if subRate > 100 {
 				subRate = 100
 			}
@@ -929,6 +975,11 @@ FROM records`, args...)
 	if err := rows.Close(); err != nil {
 		return nil, nil, 0, err
 	}
+	if filter.View == "users" {
+		// In user view each record is one directly invited user, including
+		// users who have not generated usage yet.
+		summary.TotalInvitees = total
+	}
 	if filter.InviterOnly && filter.View == "users" && filter.InviterID > 0 {
 		settledAmount, err := queryAffiliateUsageSettledAmount(ctx, client, filter)
 		if err != nil {
@@ -1060,6 +1111,67 @@ WHERE `+strings.Join(clauses, " AND "), args...)
 	return settledAmount, rows.Err()
 }
 
+// GetSecondLevelCashbackSummary returns the share of accrued affiliate rebate
+// that was allocated to a second-level agent by the agency split. Settlement
+// rows are kept in the same reconciliation table as first-level settlements;
+// the user_id is the second-level recipient when a payment has been recorded.
+func (r *affiliateRepository) GetSecondLevelCashbackSummary(ctx context.Context, subagentID int64, filter service.AffiliateUsageFilter) (service.SecondLevelCashbackSummary, error) {
+	if subagentID <= 0 {
+		return service.SecondLevelCashbackSummary{}, service.ErrUserNotFound
+	}
+
+	client := clientFromContext(ctx, r.client)
+	args := []any{subagentID}
+	ledgerClauses := []string{
+		"ual.user_id = $1",
+		"ual.action = 'accrue'",
+		"ual.agency_level = 2",
+		"ual.source_order_id IS NOT NULL",
+	}
+	settlementClauses := []string{"uas.user_id = $1", "uas.amount > 0"}
+	tz := strings.ReplaceAll(affiliateUsageTimezone(filter.Timezone), "'", "''")
+	if filter.StartAt != nil {
+		args = append(args, *filter.StartAt)
+		placeholder := fmt.Sprint(len(args))
+		ledgerClauses = append(ledgerClauses, "ual.created_at >= $"+placeholder)
+		settlementClauses = append(settlementClauses, fmt.Sprintf("uas.settled_on >= ($%s AT TIME ZONE '%s')::date", placeholder, tz))
+	}
+	if filter.EndAt != nil {
+		args = append(args, *filter.EndAt)
+		placeholder := fmt.Sprint(len(args))
+		ledgerClauses = append(ledgerClauses, "ual.created_at < $"+placeholder)
+		settlementClauses = append(settlementClauses, fmt.Sprintf("uas.settled_on < ($%s AT TIME ZONE '%s')::date", placeholder, tz))
+	}
+
+	rows, err := client.QueryContext(ctx, `
+SELECT COALESCE((
+           SELECT SUM(ual.amount)
+           FROM user_affiliate_ledger ual
+           WHERE `+strings.Join(ledgerClauses, " AND ")+`
+       ), 0)::double precision,
+       COALESCE((
+           SELECT SUM(uas.amount)
+           FROM user_affiliate_settlements uas
+           WHERE `+strings.Join(settlementClauses, " AND ")+`
+       ), 0)::double precision`, args...)
+	if err != nil {
+		return service.SecondLevelCashbackSummary{}, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var summary service.SecondLevelCashbackSummary
+	if rows.Next() {
+		if err := rows.Scan(&summary.TotalDue, &summary.TotalSettled); err != nil {
+			return service.SecondLevelCashbackSummary{}, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return service.SecondLevelCashbackSummary{}, err
+	}
+	summary.TotalPending = math.Max(summary.TotalDue-summary.TotalSettled, 0)
+	return summary, nil
+}
+
 func (r *affiliateRepository) ListAffiliateRebateRecords(ctx context.Context, filter service.AffiliateRecordFilter) ([]service.AffiliateRebateRecord, int64, error) {
 	client := clientFromContext(ctx, r.client)
 	where, args := buildAffiliateRecordWhere(filter, "ual.created_at", []string{
@@ -1075,6 +1187,15 @@ WHERE ual.action = 'accrue'
   AND ual.source_order_id IS NOT NULL`
 	if where != "" {
 		where = strings.Replace(where, "WHERE ", " AND ", 1)
+	}
+	if filter.UserID > 0 {
+		args = append(args, filter.UserID)
+		condition := fmt.Sprintf("ual.user_id = $%d", len(args))
+		if where == "" {
+			where = " AND " + condition
+		} else {
+			where += " AND " + condition
+		}
 	}
 
 	total, err := queryAffiliateRecordCount(ctx, client, "SELECT COUNT(*) "+baseJoin+where, args...)

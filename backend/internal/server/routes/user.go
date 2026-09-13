@@ -91,6 +91,7 @@ func RegisterUserRoutes(
 			agency.PUT("/agents/:id/rate", h.SecondLevelAgency.SetRate)
 			agency.GET("/agents/:id/usage", h.SecondLevelAgency.Usage)
 			agency.GET("/agents/:id/rebates", h.SecondLevelAgency.Rebates)
+			agency.POST("/agents/:id/settlements", h.SecondLevelAgency.CreateSettlement)
 		}
 
 		// 用户可用分组（非管理员接口）

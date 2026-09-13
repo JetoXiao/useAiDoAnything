@@ -478,6 +478,7 @@ type AffiliateUsageSummary struct {
 	TotalRebateAmount  float64 `json:"total_rebate_amount"`
 	TotalSettledAmount float64 `json:"total_settled_amount"`
 	TotalPendingAmount float64 `json:"total_pending_amount"`
+	TotalInvitees      int64   `json:"total_invited_users"`
 }
 
 type AffiliateRebateRecord struct {
