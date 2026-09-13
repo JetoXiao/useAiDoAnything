@@ -23,6 +23,10 @@ type Announcement struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	EligibleUserCount int64 `json:"eligible_user_count"`
+	ReadUserCount     int64 `json:"read_user_count"`
+	UnreadUserCount   int64 `json:"unread_user_count"`
 }
 
 type UserAnnouncement struct {
@@ -45,18 +49,21 @@ func AnnouncementFromService(a *service.Announcement) *Announcement {
 		return nil
 	}
 	return &Announcement{
-		ID:         a.ID,
-		Title:      a.Title,
-		Content:    a.Content,
-		Status:     a.Status,
-		NotifyMode: a.NotifyMode,
-		Targeting:  a.Targeting,
-		StartsAt:   a.StartsAt,
-		EndsAt:     a.EndsAt,
-		CreatedBy:  a.CreatedBy,
-		UpdatedBy:  a.UpdatedBy,
-		CreatedAt:  a.CreatedAt,
-		UpdatedAt:  a.UpdatedAt,
+		ID:                a.ID,
+		Title:             a.Title,
+		Content:           a.Content,
+		Status:            a.Status,
+		NotifyMode:        a.NotifyMode,
+		Targeting:         a.Targeting,
+		StartsAt:          a.StartsAt,
+		EndsAt:            a.EndsAt,
+		CreatedBy:         a.CreatedBy,
+		UpdatedBy:         a.UpdatedBy,
+		CreatedAt:         a.CreatedAt,
+		UpdatedAt:         a.UpdatedAt,
+		EligibleUserCount: a.EligibleUserCount,
+		ReadUserCount:     a.ReadUserCount,
+		UnreadUserCount:   a.UnreadUserCount,
 	}
 }
 

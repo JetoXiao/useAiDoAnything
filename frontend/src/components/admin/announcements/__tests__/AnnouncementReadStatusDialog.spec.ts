@@ -3,8 +3,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 
 import AnnouncementReadStatusDialog from '../AnnouncementReadStatusDialog.vue'
 
-const { getReadStatus, showError } = vi.hoisted(() => ({
+const { getReadStatus, getReadStats, showError } = vi.hoisted(() => ({
   getReadStatus: vi.fn(),
+  getReadStats: vi.fn(),
   showError: vi.fn(),
 }))
 
@@ -12,6 +13,7 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     announcements: {
       getReadStatus,
+      getReadStats,
     },
   },
 }))
@@ -45,6 +47,7 @@ const BaseDialogStub = {
 describe('AnnouncementReadStatusDialog', () => {
   beforeEach(() => {
     getReadStatus.mockReset()
+    getReadStats.mockReset()
     showError.mockReset()
     vi.useFakeTimers()
   })
@@ -53,6 +56,9 @@ describe('AnnouncementReadStatusDialog', () => {
     let activeSignal: AbortSignal | undefined
     getReadStatus.mockImplementation(async (...args: any[]) => {
       activeSignal = args[4]?.signal
+      return new Promise(() => {})
+    })
+    getReadStats.mockImplementation(async (...args: any[]) => {
       return new Promise(() => {})
     })
 

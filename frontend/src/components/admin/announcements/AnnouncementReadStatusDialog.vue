@@ -6,6 +6,21 @@
     @close="handleClose"
   >
     <div class="space-y-4">
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 dark:border-dark-700 dark:bg-dark-800">
+          <div class="text-xs text-gray-500 dark:text-dark-400">{{ t('admin.announcements.eligibleUsers') }}</div>
+          <div class="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">{{ formatInteger(readStats.eligible_users) }}</div>
+        </div>
+        <div class="rounded-lg border border-emerald-100 bg-emerald-50 px-4 py-3 dark:border-emerald-900/40 dark:bg-emerald-900/20">
+          <div class="text-xs text-emerald-700 dark:text-emerald-300">{{ t('admin.announcements.readUsers') }}</div>
+          <div class="mt-1 text-2xl font-semibold text-emerald-700 dark:text-emerald-300">{{ formatInteger(readStats.read_users) }}</div>
+        </div>
+        <div class="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 dark:border-amber-900/40 dark:bg-amber-900/20">
+          <div class="text-xs text-amber-700 dark:text-amber-300">{{ t('admin.announcements.unreadUsers') }}</div>
+          <div class="mt-1 text-2xl font-semibold text-amber-700 dark:text-amber-300">{{ formatInteger(readStats.unread_users) }}</div>
+        </div>
+      </div>
+
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div class="flex-1">
           <input
@@ -98,6 +113,11 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const search = ref('')
+const readStats = reactive({
+  eligible_users: 0,
+  read_users: 0,
+  unread_users: 0
+})
 
 const pagination = reactive({
   page: 1,
@@ -128,6 +148,9 @@ function resetDialogState() {
   loading.value = false
   search.value = ''
   items.value = []
+  readStats.eligible_users = 0
+  readStats.read_users = 0
+  readStats.unread_users = 0
   pagination.page = 1
   pagination.total = 0
   pagination.pages = 0
@@ -157,21 +180,27 @@ async function load() {
 
   try {
     loading.value = true
-    const res = await adminAPI.announcements.getReadStatus(
-      props.announcementId,
-      pagination.page,
-      pagination.page_size,
-      {
-        search: search.value,
-        sort_by: sortState.sort_by,
-        sort_order: sortState.sort_order
-      },
-      { signal }
-    )
+    const [res, stats] = await Promise.all([
+      adminAPI.announcements.getReadStatus(
+        props.announcementId,
+        pagination.page,
+        pagination.page_size,
+        {
+          search: search.value,
+          sort_by: sortState.sort_by,
+          sort_order: sortState.sort_order
+        },
+        { signal }
+      ),
+      adminAPI.announcements.getReadStats(props.announcementId, { signal })
+    ])
 
     if (signal.aborted || currentController !== requestController) return
 
     items.value = res.items
+    readStats.eligible_users = stats.eligible_users ?? 0
+    readStats.read_users = stats.read_users ?? 0
+    readStats.unread_users = stats.unread_users ?? 0
     pagination.total = res.total
     pagination.pages = res.pages
     pagination.page = res.page
@@ -193,6 +222,10 @@ async function load() {
       currentController = null
     }
   }
+}
+
+function formatInteger(value: number | null | undefined): string {
+  return new Intl.NumberFormat().format(Number(value ?? 0))
 }
 
 function handlePageChange(page: number) {

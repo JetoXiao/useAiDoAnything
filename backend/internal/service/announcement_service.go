@@ -212,7 +212,109 @@ func (s *AnnouncementService) GetByID(ctx context.Context, id int64) (*Announcem
 }
 
 func (s *AnnouncementService) List(ctx context.Context, params pagination.PaginationParams, filters AnnouncementListFilters) ([]Announcement, *pagination.PaginationResult, error) {
-	return s.announcementRepo.List(ctx, params, filters)
+	items, page, err := s.announcementRepo.List(ctx, params, filters)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(items) == 0 {
+		return items, page, nil
+	}
+
+	// The admin list needs the read counters next to each announcement. Keep
+	// this calculation in the service so the targeting semantics stay exactly
+	// the same as the user-facing ListForUser/MarkRead paths.
+	users, err := s.listAnnouncementAudienceUsers(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list announcement audience users: %w", err)
+	}
+	for i := range items {
+		stats, err := s.getReadStatsForUsers(ctx, &items[i], users)
+		if err != nil {
+			return nil, nil, fmt.Errorf("get announcement read stats: %w", err)
+		}
+		items[i].EligibleUserCount = stats.EligibleUsers
+		items[i].ReadUserCount = stats.ReadUsers
+		items[i].UnreadUserCount = stats.UnreadUsers
+	}
+	return items, page, nil
+}
+
+// GetReadStats returns read/unread counts for users currently matching the
+// announcement's targeting rules. The eligible population follows the same
+// non-deleted user set used by the admin read-status detail endpoint.
+func (s *AnnouncementService) GetReadStats(ctx context.Context, announcementID int64) (AnnouncementReadStats, error) {
+	ann, err := s.announcementRepo.GetByID(ctx, announcementID)
+	if err != nil {
+		return AnnouncementReadStats{}, err
+	}
+	users, err := s.listAnnouncementAudienceUsers(ctx)
+	if err != nil {
+		return AnnouncementReadStats{}, fmt.Errorf("list announcement audience users: %w", err)
+	}
+	return s.getReadStatsForUsers(ctx, ann, users)
+}
+
+func (s *AnnouncementService) listAnnouncementAudienceUsers(ctx context.Context) ([]User, error) {
+	// Fetch all non-deleted users. Subscription data is loaded in the same
+	// query path used by the admin user list, so targeting checks do not need
+	// one subscription query per user. This intentionally follows the existing
+	// read-status detail endpoint, which also lists every non-deleted user.
+	includeSubscriptions := true
+	const pageSize = 1000
+	allUsers := make([]User, 0)
+	for page := 1; ; page++ {
+		users, pageInfo, err := s.userRepo.ListWithFilters(ctx, pagination.PaginationParams{
+			Page:     page,
+			PageSize: pageSize,
+		}, UserListFilters{
+			IncludeSubscriptions: &includeSubscriptions,
+		})
+		if err != nil {
+			return nil, err
+		}
+		allUsers = append(allUsers, users...)
+		if pageInfo == nil || page >= pageInfo.Pages || len(users) == 0 {
+			break
+		}
+	}
+	return allUsers, nil
+}
+
+func (s *AnnouncementService) getReadStatsForUsers(ctx context.Context, ann *Announcement, users []User) (AnnouncementReadStats, error) {
+	if ann == nil {
+		return AnnouncementReadStats{}, ErrAnnouncementNotFound
+	}
+
+	eligibleIDs := make([]int64, 0, len(users))
+	for i := range users {
+		user := users[i]
+		activeGroupIDs := make(map[int64]struct{}, len(user.Subscriptions))
+		for j := range user.Subscriptions {
+			if user.Subscriptions[j].IsActive() {
+				activeGroupIDs[user.Subscriptions[j].GroupID] = struct{}{}
+			}
+		}
+		if domain.AnnouncementTargeting(ann.Targeting).Matches(user.Balance, activeGroupIDs) {
+			eligibleIDs = append(eligibleIDs, user.ID)
+		}
+	}
+
+	if len(eligibleIDs) == 0 {
+		return AnnouncementReadStats{}, nil
+	}
+
+	readMap, err := s.readRepo.GetReadMapByUsers(ctx, ann.ID, eligibleIDs)
+	if err != nil {
+		return AnnouncementReadStats{}, fmt.Errorf("get announcement read map: %w", err)
+	}
+
+	readCount := int64(len(readMap))
+	eligibleCount := int64(len(eligibleIDs))
+	return AnnouncementReadStats{
+		EligibleUsers: eligibleCount,
+		ReadUsers:     readCount,
+		UnreadUsers:   eligibleCount - readCount,
+	}, nil
 }
 
 func (s *AnnouncementService) ListForUser(ctx context.Context, userID int64, unreadOnly bool) ([]UserAnnouncement, error) {

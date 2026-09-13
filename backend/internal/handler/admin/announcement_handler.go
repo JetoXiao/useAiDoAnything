@@ -254,3 +254,21 @@ func (h *AnnouncementHandler) ListReadStatus(c *gin.Context) {
 
 	response.Paginated(c, items, paginationResult.Total, page, pageSize)
 }
+
+// GetReadStats handles aggregate read statistics for an announcement.
+// GET /api/v1/admin/announcements/:id/read-stats
+func (h *AnnouncementHandler) GetReadStats(c *gin.Context) {
+	announcementID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || announcementID <= 0 {
+		response.BadRequest(c, "Invalid announcement ID")
+		return
+	}
+
+	stats, err := h.announcementService.GetReadStats(c.Request.Context(), announcementID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, stats)
+}

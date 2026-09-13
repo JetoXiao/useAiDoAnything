@@ -95,6 +95,19 @@
             </span>
           </template>
 
+          <template #cell-readStats="{ row }">
+            <div class="space-y-1 text-sm">
+              <div class="flex items-center gap-2">
+                <span class="text-gray-500 dark:text-dark-400">{{ t('admin.announcements.readUsers') }}</span>
+                <span class="font-semibold text-emerald-600 dark:text-emerald-400">{{ formatInteger(row.read_user_count) }}</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-gray-500 dark:text-dark-400">{{ t('admin.announcements.unreadUsers') }}</span>
+                <span class="font-semibold text-amber-600 dark:text-amber-400">{{ formatInteger(row.unread_user_count) }}</span>
+              </div>
+            </div>
+          </template>
+
           <template #cell-timeRange="{ row }">
             <div class="text-sm text-gray-600 dark:text-gray-300">
               <div>
@@ -312,6 +325,7 @@ const columns = computed<Column[]>(() => [
   { key: 'status', label: t('admin.announcements.columns.status'), sortable: true },
   { key: 'notify_mode', label: t('admin.announcements.columns.notifyMode'), sortable: true },
   { key: 'targeting', label: t('admin.announcements.columns.targeting') },
+  { key: 'readStats', label: t('admin.announcements.columns.readStats') },
   { key: 'timeRange', label: t('admin.announcements.columns.timeRange') },
   { key: 'created_at', label: t('admin.announcements.columns.createdAt'), sortable: true },
   { key: 'actions', label: t('admin.announcements.columns.actions') }
@@ -329,6 +343,8 @@ const targetingSummary = (targeting: AnnouncementTargeting) => {
   if (!anyOf || anyOf.length === 0) return t('admin.announcements.targetingSummaryAll')
   return t('admin.announcements.targetingSummaryCustom', { groups: anyOf.length })
 }
+
+const formatInteger = (value: number | null | undefined) => new Intl.NumberFormat().format(Number(value ?? 0))
 
 // ===== CRUD / list =====
 let currentController: AbortController | null = null

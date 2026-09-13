@@ -5758,6 +5758,7 @@ export default {
         status: '状态',
         notifyMode: '通知方式',
         targeting: '展示条件',
+        readStats: '查看情况',
         timeRange: '有效期',
         createdAt: '创建时间',
         actions: '操作'
@@ -5805,6 +5806,9 @@ export default {
       timeImmediate: '立即',
       timeNever: '永久',
       readStatus: '已读情况',
+      eligibleUsers: '应展示用户',
+      readUsers: '已查看',
+      unreadUsers: '未查看',
       eligible: '符合条件',
       readAt: '已读时间',
       unread: '未读',

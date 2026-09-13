@@ -5605,6 +5605,7 @@ export default {
         status: 'Status',
         notifyMode: 'Notify Mode',
         targeting: 'Targeting',
+        readStats: 'Read Stats',
         timeRange: 'Schedule',
         createdAt: 'Created At',
         actions: 'Actions'
@@ -5652,6 +5653,9 @@ export default {
       timeImmediate: 'Immediate',
       timeNever: 'Never',
       readStatus: 'Read Status',
+      eligibleUsers: 'Eligible users',
+      readUsers: 'Viewed',
+      unreadUsers: 'Not viewed',
       eligible: 'Eligible',
       readAt: 'Read at',
       unread: 'Unread',

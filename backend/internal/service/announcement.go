@@ -67,6 +67,14 @@ type AnnouncementListFilters struct {
 	Search string
 }
 
+// AnnouncementReadStats describes the current read state for users who match
+// an announcement's targeting rules.
+type AnnouncementReadStats struct {
+	EligibleUsers int64 `json:"eligible_users"`
+	ReadUsers     int64 `json:"read_users"`
+	UnreadUsers   int64 `json:"unread_users"`
+}
+
 type AnnouncementRepository interface {
 	Create(ctx context.Context, a *Announcement) error
 	GetByID(ctx context.Context, id int64) (*Announcement, error)

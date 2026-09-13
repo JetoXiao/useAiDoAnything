@@ -455,6 +455,9 @@ export interface Announcement {
   updated_by?: number
   created_at: string
   updated_at: string
+  eligible_user_count?: number
+  read_user_count?: number
+  unread_user_count?: number
 }
 
 export interface UserAnnouncement {

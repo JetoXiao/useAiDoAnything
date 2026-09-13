@@ -212,6 +212,12 @@ type Announcement struct {
 	UpdatedBy  *int64
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+
+	// Read statistics are populated by the admin announcement service.
+	// They describe users who currently match the announcement targeting rules.
+	EligibleUserCount int64
+	ReadUserCount     int64
+	UnreadUserCount   int64
 }
 
 func (a *Announcement) IsActiveAt(now time.Time) bool {

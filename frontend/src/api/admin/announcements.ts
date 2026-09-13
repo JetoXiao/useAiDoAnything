@@ -11,6 +11,12 @@ import type {
   UpdateAnnouncementRequest
 } from '@/types'
 
+export interface AnnouncementReadStats {
+  eligible_users: number
+  read_users: number
+  unread_users: number
+}
+
 export async function list(
   page: number = 1,
   pageSize: number = 20,
@@ -74,13 +80,26 @@ export async function getReadStatus(
   return data
 }
 
+export async function getReadStats(
+  id: number,
+  options?: {
+    signal?: AbortSignal
+  }
+): Promise<AnnouncementReadStats> {
+  const { data } = await apiClient.get<AnnouncementReadStats>(`/admin/announcements/${id}/read-stats`, {
+    signal: options?.signal
+  })
+  return data
+}
+
 const announcementsAPI = {
   list,
   getById,
   create,
   update,
   delete: deleteAnnouncement,
-  getReadStatus
+  getReadStatus,
+  getReadStats
 }
 
 export default announcementsAPI
