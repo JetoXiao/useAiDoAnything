@@ -341,8 +341,20 @@ func (r *affiliateRepository) CreateSecondLevelAgent(ctx context.Context, input 
 }
 
 func (r *affiliateRepository) SetSecondLevelAgentStatus(ctx context.Context, rootID, agentID int64, status string) error {
-	_, err := r.client.ExecContext(ctx, `UPDATE affiliate_subagents SET status=$1, disabled_at=CASE WHEN $1='disabled' THEN NOW() ELSE NULL END, updated_at=NOW() WHERE id=$2 AND root_partner_user_id=$3`, status, agentID, rootID)
-	return err
+	result, err := r.client.ExecContext(ctx, `UPDATE affiliate_subagents SET status=$1, disabled_at=CASE WHEN $1='disabled' THEN NOW() ELSE NULL END, updated_at=NOW() WHERE id=$2 AND root_partner_user_id=$3`, status, agentID, rootID)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated == 0 {
+		// Treat a missing/foreign agent as an invalid agency operation instead
+		// of reporting success when PostgreSQL updated zero rows.
+		return service.ErrSecondLevelAgencyInvalid
+	}
+	return nil
 }
 
 func (r *affiliateRepository) SetSecondLevelAgentCommissionRate(ctx context.Context, rootID, agentID int64, rate float64) error {

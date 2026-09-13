@@ -417,7 +417,7 @@ async function toggle(agent: SecondLevelAgent) {
     await secondLevelAgencyAPI.setStatus(agent.id, agent.status === 'active' ? 'disabled' : 'active')
     await load()
   } catch (error: any) {
-    appStore.showError(error?.response?.data?.detail || '更新代理状态失败')
+    appStore.showError(error?.message || error?.response?.data?.detail || '更新代理状态失败')
   }
 }
 
