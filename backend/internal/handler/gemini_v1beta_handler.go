@@ -463,6 +463,17 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				googleError(c, http.StatusTooManyRequests, err.Error())
 				return
 			}
+			if selection.WaitPlan.SessionID != "" && !h.gatewayService.RegisterAccountSession(c.Request.Context(), account, selection.WaitPlan.SessionID) {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				if accountWaitCounted {
+					geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
+					accountWaitCounted = false
+				}
+				googleError(c, http.StatusTooManyRequests, "Maximum active sessions reached")
+				return
+			}
 			if accountWaitCounted {
 				geminiConcurrency.DecrementAccountWaitCount(c.Request.Context(), account.ID)
 				accountWaitCounted = false

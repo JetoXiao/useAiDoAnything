@@ -1217,6 +1217,7 @@ func normalizeOpenAIOfficialCapacityFailoverError(err *UpstreamFailoverError) *U
 	normalized.ForceCacheBilling = err.ForceCacheBilling
 	normalized.RetryableOnSameAccount = err.RetryableOnSameAccount
 	normalized.MaxSameAccountRetries = err.MaxSameAccountRetries
+	normalized.RetryAfter = err.RetryAfter
 	normalized.RequestScoped = err.RequestScoped
 	normalized.ModelScoped = err.ModelScoped
 	return normalized
@@ -1903,22 +1904,14 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(
 		if err == nil && result != nil && result.Acquired {
 			return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
 		}
-		if stickyAccountID > 0 && stickyAccountID == account.ID && s.concurrencyService != nil {
-			waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID)
-			if waitingCount < cfg.StickySessionMaxWaiting {
-				return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-					AccountID:      account.ID,
-					MaxConcurrency: account.Concurrency,
-					Timeout:        cfg.StickySessionWaitTimeout,
-					MaxWaiting:     cfg.StickySessionMaxWaiting,
-				})
-			}
-		}
+		// Sticky affinity is soft. Let load-aware selection use another
+		// account when the sticky account is saturated.
 		return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
 			AccountID:      account.ID,
 			MaxConcurrency: account.Concurrency,
 			Timeout:        cfg.FallbackWaitTimeout,
 			MaxWaiting:     cfg.FallbackMaxWaiting,
+			SessionID:      sessionHash,
 		})
 	}
 
@@ -1997,15 +1990,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(
 								return selection, nil
 							}
 
-							waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-							if waitingCount < cfg.StickySessionMaxWaiting {
-								return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-									AccountID:      accountID,
-									MaxConcurrency: account.Concurrency,
-									Timeout:        cfg.StickySessionWaitTimeout,
-									MaxWaiting:     cfg.StickySessionMaxWaiting,
-								})
-							}
+							// Busy sticky account falls through to load-aware selection.
 						}
 					}
 				}
@@ -2240,6 +2225,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(
 			MaxConcurrency: fresh.Concurrency,
 			Timeout:        cfg.FallbackWaitTimeout,
 			MaxWaiting:     cfg.FallbackMaxWaiting,
+			SessionID:      sessionHash,
 		})
 		if selectErr != nil {
 			return nil, selectErr

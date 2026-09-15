@@ -40,6 +40,32 @@ func newTestFailoverErr(statusCode int, retryable, forceBilling bool) *service.U
 	}
 }
 
+func TestFailoverRetryDelayUsesRetryAfterAndBackoff(t *testing.T) {
+	err := newTestFailoverErr(429, true, false)
+	err.RetryAfter = 3 * time.Second
+	if got := failoverRetryDelay(err, 1); got != 3*time.Second {
+		t.Fatalf("retry-after delay = %s, want 3s", got)
+	}
+	if got := failoverRetryDelay(newTestFailoverErr(502, true, false), 3); got != 2*time.Second {
+		t.Fatalf("exponential delay = %s, want 2s", got)
+	}
+	if got := failoverRetryDelay(newTestFailoverErr(403, true, false), 1); got != 0 {
+		t.Fatalf("403 retry delay = %s, want 0", got)
+	}
+}
+
+func TestShouldRetrySameAccountSkipsAuthFailures(t *testing.T) {
+	if shouldRetrySameAccount(newTestFailoverErr(401, true, false)) {
+		t.Fatal("401 must switch accounts without same-account retries")
+	}
+	if shouldRetrySameAccount(newTestFailoverErr(403, true, false)) {
+		t.Fatal("403 must switch accounts without same-account retries")
+	}
+	if !shouldRetrySameAccount(newTestFailoverErr(429, true, false)) {
+		t.Fatal("429 should remain eligible for same-account retry")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // NewFailoverState 测试
 // ---------------------------------------------------------------------------

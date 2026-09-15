@@ -283,6 +283,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	retryStartedAt := time.Now()
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
@@ -412,7 +413,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						if failoverErr.MaxSameAccountRetries > 0 && failoverErr.MaxSameAccountRetries < retryLimit {
 							retryLimit = failoverErr.MaxSameAccountRetries
 						}
-						if sameAccountRetryCount[account.ID] < retryLimit {
+						delay := failoverRetryDelay(failoverErr, sameAccountRetryCount[account.ID]+1)
+						if shouldRetrySameAccount(failoverErr) && sameAccountRetryCount[account.ID] < retryLimit && failoverRetryWithinBudget(retryStartedAt, delay) {
 							sameAccountRetryCount[account.ID]++
 							reqLog.Warn("openai.pool_mode_same_account_retry",
 								zap.Int64("account_id", account.ID),
@@ -423,7 +425,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							select {
 							case <-c.Request.Context().Done():
 								return
-							case <-time.After(sameAccountRetryDelay):
+							case <-time.After(delay):
 							}
 							continue
 						}
@@ -737,6 +739,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	retryStartedAt := time.Now()
 	var lastFailoverErr *service.UpstreamFailoverError
 	effectiveMappedModel := preferredMappedModel
 
@@ -862,7 +865,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						if failoverErr.MaxSameAccountRetries > 0 && failoverErr.MaxSameAccountRetries < retryLimit {
 							retryLimit = failoverErr.MaxSameAccountRetries
 						}
-						if sameAccountRetryCount[account.ID] < retryLimit {
+						delay := failoverRetryDelay(failoverErr, sameAccountRetryCount[account.ID]+1)
+						if shouldRetrySameAccount(failoverErr) && sameAccountRetryCount[account.ID] < retryLimit && failoverRetryWithinBudget(retryStartedAt, delay) {
 							sameAccountRetryCount[account.ID]++
 							reqLog.Warn("openai_messages.pool_mode_same_account_retry",
 								zap.Int64("account_id", account.ID),
@@ -873,7 +877,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							select {
 							case <-c.Request.Context().Done():
 								return
-							case <-time.After(sameAccountRetryDelay):
+							case <-time.After(delay):
 							}
 							continue
 						}

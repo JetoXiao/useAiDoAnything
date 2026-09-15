@@ -470,6 +470,7 @@ type AccountWaitPlan struct {
 	MaxConcurrency int
 	Timeout        time.Duration
 	MaxWaiting     int
+	SessionID      string // registered only after the wait actually acquires a slot
 }
 
 type AccountSelectionResult struct {
@@ -517,13 +518,45 @@ type ForwardResult struct {
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
 type UpstreamFailoverError struct {
 	StatusCode             int
-	ResponseBody           []byte      // 上游响应体，用于错误透传规则匹配
-	ResponseHeaders        http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
-	ForceCacheBilling      bool        // Antigravity 粘性会话切换时设为 true
-	RetryableOnSameAccount bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
-	MaxSameAccountRetries  int         // 大于 0 时覆盖账号默认的同账号重试次数
-	RequestScoped          bool        // 请求内容与当前上游不兼容；默认仅切换当前请求，ModelScoped=true 时仍计入模型熔断
-	ModelScoped            bool        // 即使请求内容相关，也确认反映账号+模型兼容性，应计入模型熔断
+	ResponseBody           []byte        // 上游响应体，用于错误透传规则匹配
+	ResponseHeaders        http.Header   // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
+	ForceCacheBilling      bool          // Antigravity 粘性会话切换时设为 true
+	RetryableOnSameAccount bool          // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	MaxSameAccountRetries  int           // 大于 0 时覆盖账号默认的同账号重试次数
+	RequestScoped          bool          // 请求内容与当前上游不兼容；默认仅切换当前请求，ModelScoped=true 时仍计入模型熔断
+	ModelScoped            bool          // 即使请求内容相关，也确认反映账号+模型兼容性，应计入模型熔断
+	RetryAfter             time.Duration // upstream Retry-After hint for retry pacing
+}
+
+// RetryAfterFromHeaders parses Retry-After as delta seconds or an HTTP date.
+// The result is bounded so an upstream cannot stall a request indefinitely.
+func RetryAfterFromHeaders(headers http.Header, now time.Time) time.Duration {
+	if headers == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(headers.Get("Retry-After"))
+	if raw == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil {
+		if seconds > 0 {
+			if seconds > 10 {
+				seconds = 10
+			}
+			return time.Duration(seconds) * time.Second
+		}
+		return 0
+	}
+	if when, err := http.ParseTime(raw); err == nil {
+		delay := when.Sub(now)
+		if delay > 10*time.Second {
+			return 10 * time.Second
+		}
+		if delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 func (e *UpstreamFailoverError) Error() string {
@@ -1517,12 +1550,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
 			}
 
-			// 对于等待计划的情况，也需要先检查会话限制
-			if !s.checkAndRegisterSession(ctx, account, sessionHash) {
-				localExcluded[account.ID] = struct{}{}
-				continue
-			}
-
 			if stickyAccountID > 0 && stickyAccountID == account.ID && s.concurrencyService != nil {
 				waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID)
 				if waitingCount < cfg.StickySessionMaxWaiting {
@@ -1531,6 +1558,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						MaxConcurrency: account.Concurrency,
 						Timeout:        cfg.StickySessionWaitTimeout,
 						MaxWaiting:     cfg.StickySessionMaxWaiting,
+						SessionID:      sessionHash,
 					})
 				}
 			}
@@ -1539,6 +1567,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				MaxConcurrency: account.Concurrency,
 				Timeout:        cfg.FallbackWaitTimeout,
 				MaxWaiting:     cfg.FallbackMaxWaiting,
+				SessionID:      sessionHash,
 			})
 		}
 	}
@@ -1704,21 +1733,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							if stickyCacheMissReason == "" {
 								waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, stickyAccountID)
 								if waitingCount < cfg.StickySessionMaxWaiting {
-									// 会话数量限制检查（等待计划也需要占用会话配额）
-									if !s.checkAndRegisterSession(ctx, stickyAccount, sessionHash) {
-										stickyCacheMissReason = "session_limit"
-										// 会话限制已满，继续到负载感知选择
-									} else {
-										return &AccountSelectionResult{
-											Account: stickyAccount,
-											WaitPlan: &AccountWaitPlan{
-												AccountID:      stickyAccountID,
-												MaxConcurrency: stickyAccount.Concurrency,
-												Timeout:        cfg.StickySessionWaitTimeout,
-												MaxWaiting:     cfg.StickySessionMaxWaiting,
-											},
-										}, nil
-									}
+									// Sticky affinity is soft. Do not enqueue behind a busy
+									// sticky account while healthy alternatives are available.
+									stickyCacheMissReason = "slot_busy_fallback"
 								} else {
 									stickyCacheMissReason = "wait_queue_full"
 								}
@@ -1812,12 +1829,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					}
 				}
 
-				// 5. 所有路由账号槽位满，尝试返回等待计划（选择负载最低的）
-				// 遍历找到第一个满足会话限制的账号
+				// 5. 所有路由账号槽位满，尝试返回等待计划（选择负载最低的）。
+				// 会话限制在真正拿到槽位后再注册，避免排队请求虚占容量。
 				for _, item := range routingAvailable {
-					if !s.checkAndRegisterSession(ctx, item.account, sessionHash) {
-						continue // 会话限制已满，尝试下一个
-					}
 					if s.debugModelRoutingEnabled() {
 						logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed wait: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), item.account.ID)
 					}
@@ -1826,6 +1840,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						MaxConcurrency: item.account.Concurrency,
 						Timeout:        cfg.StickySessionWaitTimeout,
 						MaxWaiting:     cfg.StickySessionMaxWaiting,
+						SessionID:      sessionHash,
 					})
 				}
 				// 所有路由账号会话限制都已满，继续到 Layer 2 回退
@@ -1905,25 +1920,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						)
 					}
 
-					waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-					if waitingCount < cfg.StickySessionMaxWaiting {
-						// 会话数量限制检查（等待计划也需要占用会话配额）
-						if !s.checkAndRegisterSession(ctx, account, sessionHash) {
-							// 会话限制已满，继续到 Layer 2
-						} else {
-							slog.Debug("sticky.layer1_5_no_routing_hit",
-								"account_id", accountID,
-								"session", shortSessionHash(sessionHash),
-								"result", "wait_plan",
-							)
-							return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-								AccountID:      accountID,
-								MaxConcurrency: account.Concurrency,
-								Timeout:        cfg.StickySessionWaitTimeout,
-								MaxWaiting:     cfg.StickySessionMaxWaiting,
-							})
-						}
-					}
+					// Sticky affinity is soft. Once the sticky slot is busy,
+					// continue to the load-aware layer instead of queueing here.
 				} else if !clearSticky {
 					slog.Debug("sticky.layer1_5_no_routing_miss",
 						"account_id", accountID,
@@ -2070,15 +2068,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	// ============ Layer 3: 兜底排队 ============
 	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
 	for _, acc := range candidates {
-		// 会话数量限制检查（等待计划也需要占用会话配额）
-		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
-			continue // 会话限制已满，尝试下一个账号
-		}
 		return s.newSelectionResult(ctx, acc, false, nil, &AccountWaitPlan{
 			AccountID:      acc.ID,
 			MaxConcurrency: acc.Concurrency,
 			Timeout:        cfg.FallbackWaitTimeout,
 			MaxWaiting:     cfg.FallbackMaxWaiting,
+			SessionID:      sessionHash,
 		})
 	}
 	return nil, ErrNoAvailableAccounts
@@ -2719,6 +2714,13 @@ func (s *GatewayService) checkAndRegisterSession(ctx context.Context, account *A
 		return true
 	}
 	return allowed
+}
+
+// RegisterAccountSession performs the session-limit check after an account
+// slot has actually been acquired. Waiting plans intentionally defer this
+// operation so queued requests do not consume active-session capacity.
+func (s *GatewayService) RegisterAccountSession(ctx context.Context, account *Account, sessionID string) bool {
+	return s.checkAndRegisterSession(ctx, account, sessionID)
 }
 
 func (s *GatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {

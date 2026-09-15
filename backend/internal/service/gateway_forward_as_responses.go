@@ -615,7 +615,12 @@ func (s *GatewayService) anthropicResponsesStreamError(
 	}
 
 	if s.shouldFailoverUpstreamError(statusCode) {
-		failoverErr := &UpstreamFailoverError{StatusCode: statusCode, ResponseBody: payload}
+		failoverErr := &UpstreamFailoverError{
+			StatusCode:      statusCode,
+			ResponseBody:    payload,
+			ResponseHeaders: resp.Header.Clone(),
+			RetryAfter:      RetryAfterFromHeaders(resp.Header, time.Now()),
+		}
 		if responseStarted {
 			s.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
 		}

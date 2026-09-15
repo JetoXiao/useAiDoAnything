@@ -230,6 +230,13 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				h.handleConcurrencyError(c, err, "account", streamStarted)
 				return
 			}
+			if selection.WaitPlan.SessionID != "" && !h.gatewayService.RegisterAccountSession(c.Request.Context(), account, selection.WaitPlan.SessionID) {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				h.responsesErrorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "Maximum active sessions reached")
+				return
+			}
 		}
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 

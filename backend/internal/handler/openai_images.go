@@ -146,6 +146,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	retryStartedAt := time.Now()
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
@@ -262,7 +263,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					runtimeBlocked := h.gatewayService.RecordOpenAIAccountFailoverForModel(c.Request.Context(), account, parsed.Model, failoverErr)
 					if !runtimeBlocked && failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
-						if sameAccountRetryCount[account.ID] < retryLimit {
+						delay := failoverRetryDelay(failoverErr, sameAccountRetryCount[account.ID]+1)
+						if shouldRetrySameAccount(failoverErr) && sameAccountRetryCount[account.ID] < retryLimit && failoverRetryWithinBudget(retryStartedAt, delay) {
 							sameAccountRetryCount[account.ID]++
 							reqLog.Warn("openai.images.pool_mode_same_account_retry",
 								zap.Int64("account_id", account.ID),
@@ -273,7 +275,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							select {
 							case <-c.Request.Context().Done():
 								return
-							case <-time.After(sameAccountRetryDelay):
+							case <-time.After(delay):
 							}
 							continue
 						}

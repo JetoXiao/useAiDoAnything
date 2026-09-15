@@ -442,6 +442,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleConcurrencyError(c, err, "account", streamStarted)
 					return
 				}
+				if selection.WaitPlan.SessionID != "" && !h.gatewayService.RegisterAccountSession(c.Request.Context(), account, selection.WaitPlan.SessionID) {
+					if accountReleaseFunc != nil {
+						accountReleaseFunc()
+					}
+					releaseWait()
+					h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Maximum active sessions reached", streamStarted)
+					return
+				}
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
 				if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
@@ -718,6 +726,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
 					h.handleConcurrencyError(c, err, "account", streamStarted)
+					return
+				}
+				if selection.WaitPlan.SessionID != "" && !h.gatewayService.RegisterAccountSession(c.Request.Context(), account, selection.WaitPlan.SessionID) {
+					if accountReleaseFunc != nil {
+						accountReleaseFunc()
+					}
+					releaseWait()
+					h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Maximum active sessions reached", streamStarted)
 					return
 				}
 				// Slot acquired: no longer waiting in queue.

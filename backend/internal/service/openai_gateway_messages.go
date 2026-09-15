@@ -360,7 +360,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return nil, normalizeOpenAIOfficialCapacityFailoverError(&UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
+				ResponseHeaders:        resp.Header.Clone(),
 				RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+				RetryAfter:             RetryAfterFromHeaders(resp.Header, time.Now()),
 				RequestScoped:          isOpenAIItemIDCompatibilityError(resp.StatusCode, upstreamMsg, respBody),
 			})
 		}
