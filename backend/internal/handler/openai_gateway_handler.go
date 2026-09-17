@@ -353,6 +353,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 
+		// Commit a streaming Responses response before contacting the upstream.
+		// This gives the client an immediate SSE byte during account failover and
+		// lets the final failure be sent as response.failed instead of a late JSON
+		// body that Codex cannot associate with the active stream.
+		if reqStream {
+			if !h.ensureOpenAIResponsesStreamPreamble(c, &streamStarted) {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				return
+			}
+		}
+
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
@@ -1952,6 +1965,32 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
+			if isOpenAIResponsesStreamingRequest(c) {
+				// Codex Responses clients only surface upstream failures when
+				// encoded as response.failed; generic event:error is ignored.
+				responseErrType := errType
+				code := errType
+				// Error passthrough rules may deliberately use the generic
+				// upstream_error type for a 429. Preserve the HTTP status meaning
+				// in the Responses event so Codex applies rate-limit handling.
+				if status == http.StatusTooManyRequests {
+					responseErrType = "rate_limit_error"
+					code = "rate_limit_exceeded"
+				}
+				payload := gin.H{
+					"type": "response.failed",
+					"response": gin.H{
+						"id": "resp_failed_" + uuid.NewString(), "object": "response", "status": "failed",
+						"error": gin.H{"type": responseErrType, "code": code, "message": message},
+					},
+				}
+				encoded, _ := json.Marshal(payload)
+				if _, err := fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", encoded); err != nil {
+					_ = c.Error(err)
+				}
+				flusher.Flush()
+				return
+			}
 			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
 			errorEvent := "event: error\ndata: " + `{"error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
@@ -1964,6 +2003,34 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 
 	// Normal case: return JSON response with proper status code
 	h.errorResponse(c, status, errType, message)
+}
+
+func isOpenAIResponsesStreamingRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	return strings.HasSuffix(path, "/responses") || strings.Contains(path, "/responses/")
+}
+
+func (h *OpenAIGatewayHandler) ensureOpenAIResponsesStreamPreamble(c *gin.Context, started *bool) bool {
+	if c == nil || c.Writer == nil || started == nil || *started {
+		return true
+	}
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		return false
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	if _, err := fmt.Fprint(c.Writer, ":\n\n"); err != nil {
+		return false
+	}
+	flusher.Flush()
+	*started = true
+	return true
 }
 
 // ensureForwardErrorResponse 在 Forward 返回错误但尚未写响应时补写统一错误响应。

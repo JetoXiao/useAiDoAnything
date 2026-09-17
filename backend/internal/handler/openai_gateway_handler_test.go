@@ -93,6 +93,53 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 	}
 }
 
+func TestOpenAIHandleStreamingAwareError_ResponsesUsesResponseFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	h := &OpenAIGatewayHandler{}
+	h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Upstream rate limit exceeded", true)
+
+	body := w.Body.String()
+	assert.Contains(t, body, "event: response.failed\n")
+	assert.NotContains(t, body, "event: error\n")
+	dataLine := strings.TrimPrefix(strings.Split(body, "\n")[1], "data: ")
+	assert.Equal(t, "response.failed", gjson.Get(dataLine, "type").String())
+	assert.Equal(t, "rate_limit_exceeded", gjson.Get(dataLine, "response.error.code").String())
+	assert.Equal(t, "Upstream rate limit exceeded", gjson.Get(dataLine, "response.error.message").String())
+}
+
+func TestOpenAIHandleStreamingAwareError_Responses429NormalizesRateLimitCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/responses", nil)
+
+	(&OpenAIGatewayHandler{}).handleStreamingAwareError(c, http.StatusTooManyRequests, "upstream_error", "retry later", true)
+	dataLine := strings.TrimPrefix(strings.Split(w.Body.String(), "\n")[1], "data: ")
+	assert.Equal(t, "rate_limit_error", gjson.Get(dataLine, "response.error.type").String())
+	assert.Equal(t, "rate_limit_exceeded", gjson.Get(dataLine, "response.error.code").String())
+}
+
+func TestEnsureOpenAIResponsesStreamPreambleWritesImmediateKeepalive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	started := false
+
+	require.True(t, (&OpenAIGatewayHandler{}).ensureOpenAIResponsesStreamPreamble(c, &started))
+	require.True(t, started)
+	assert.Equal(t, ":\n\n", w.Body.String())
+	assert.Equal(t, "text/event-stream", w.Header().Get("Content-Type"))
+
+	// The preamble is emitted only once across account retries.
+	require.True(t, (&OpenAIGatewayHandler{}).ensureOpenAIResponsesStreamPreamble(c, &started))
+	assert.Equal(t, ":\n\n", w.Body.String())
+}
+
 func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
 
@@ -140,7 +187,7 @@ func TestOpenAIHandleFailoverExhausted_OfficialCapacity(t *testing.T) {
 
 	h := &OpenAIGatewayHandler{}
 	h.handleFailoverExhausted(c, &service.UpstreamFailoverError{
-		StatusCode: http.StatusBadRequest,
+		StatusCode:   http.StatusBadRequest,
 		ResponseBody: []byte(`{"error":{"message":"Selected model is at capacity. Please try again."}}`),
 	}, false)
 
@@ -161,7 +208,7 @@ func TestOpenAIHandleFailoverExhausted_OfficialCapacityStreamingEvent(t *testing
 
 	h := &OpenAIGatewayHandler{}
 	h.handleFailoverExhausted(c, &service.UpstreamFailoverError{
-		StatusCode: http.StatusServiceUnavailable,
+		StatusCode:   http.StatusServiceUnavailable,
 		ResponseBody: []byte(`{"error":{"code":"openai_official_capacity","message":"OpenAI official service is overloaded"}}`),
 	}, true)
 
