@@ -28,7 +28,7 @@ func TestNormalizeAccountTestMode(t *testing.T) {
 
 func TestBuildOpenAICompactProbeExtraUpdates_SuccessMarksSupported(t *testing.T) {
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
-	updates := buildOpenAICompactProbeExtraUpdates(&http.Response{StatusCode: http.StatusOK}, []byte(`{"id":"cmp_1"}`), nil, now)
+	updates := buildOpenAICompactProbeExtraUpdates(&http.Response{StatusCode: http.StatusOK}, []byte(`{"id":"cmp_1","output":[{"type":"compaction","id":"co_1"}]}`), nil, now)
 
 	if got := updates["openai_compact_supported"]; got != true {
 		t.Fatalf("openai_compact_supported = %v, want true", got)
@@ -41,6 +41,17 @@ func TestBuildOpenAICompactProbeExtraUpdates_SuccessMarksSupported(t *testing.T)
 	}
 	if got := updates["openai_compact_checked_at"]; got != now.Format(time.RFC3339) {
 		t.Fatalf("openai_compact_checked_at = %v, want %s", got, now.Format(time.RFC3339))
+	}
+}
+
+func TestBuildOpenAICompactProbeExtraUpdates_EmptyOutputMarksUnsupported(t *testing.T) {
+	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	updates := buildOpenAICompactProbeExtraUpdates(&http.Response{StatusCode: http.StatusOK}, []byte(`{"id":"cmp_1","output":[]}`), nil, now)
+	if got := updates["openai_compact_supported"]; got != false {
+		t.Fatalf("openai_compact_supported = %v, want false", got)
+	}
+	if got := updates["openai_compact_last_error"]; got != "compact probe returned no single compaction output item" {
+		t.Fatalf("openai_compact_last_error = %v", got)
 	}
 }
 

@@ -30,6 +30,24 @@ type stubOpenAIAccountRepo struct {
 	accounts []Account
 }
 
+func TestNormalizeOpenAIResponsesUsagePayloadAddsMissingCachedTokens(t *testing.T) {
+	input := []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":3}}}`)
+	got := normalizeOpenAIResponsesUsagePayload(input)
+	require.Equal(t, int64(0), gjson.GetBytes(got, "response.usage.input_tokens_details.cached_tokens").Int())
+	require.True(t, gjson.GetBytes(got, "response.usage.input_tokens_details.cached_tokens").Exists())
+}
+
+func TestNormalizeOpenAIResponsesUsagePayloadPreservesExistingCachedTokens(t *testing.T) {
+	input := []byte(`{"response":{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":7}}}}`)
+	got := normalizeOpenAIResponsesUsagePayload(input)
+	require.Equal(t, int64(7), gjson.GetBytes(got, "response.usage.input_tokens_details.cached_tokens").Int())
+}
+
+func TestIsOpenAICompactionTriggerRequest(t *testing.T) {
+	require.True(t, IsOpenAICompactionTriggerRequestForTest([]byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`)))
+	require.False(t, IsOpenAICompactionTriggerRequestForTest([]byte(`{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":"hi"}]}`)))
+}
+
 type snapshotUpdateAccountRepo struct {
 	stubOpenAIAccountRepo
 	updateExtraCalls chan map[string]any

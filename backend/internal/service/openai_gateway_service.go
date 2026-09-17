@@ -4107,7 +4107,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		lineStartsClientOutput := false
 		forceFlushFailedEvent := false
 		if data, ok := extractOpenAISSEDataLine(line); ok {
-			dataBytes := []byte(data)
+			dataBytes := normalizeOpenAIResponsesUsagePayload([]byte(data))
+			if !bytes.Equal(dataBytes, []byte(data)) {
+				data = string(dataBytes)
+				line = "data: " + data
+			}
 			trimmedData := strings.TrimSpace(data)
 			if needModelReplace && strings.Contains(data, mappedModel) {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
@@ -4263,6 +4267,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
+	body = normalizeOpenAIResponsesUsagePayload(body)
 	c.Data(resp.StatusCode, contentType, body)
 	return &openaiNonStreamingResultPassthrough{
 		OpenAIUsage:      usage,
@@ -4282,6 +4287,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 
 	usage := &OpenAIUsage{}
 	if ok {
+		finalResponse = normalizeOpenAIResponsesUsagePayload(finalResponse)
 		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
 			*usage = parsedUsage
 		}
@@ -4991,7 +4997,11 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 			}
 
-			dataBytes := []byte(data)
+			dataBytes := normalizeOpenAIResponsesUsagePayload([]byte(data))
+			if !bytes.Equal(dataBytes, []byte(data)) {
+				data = string(dataBytes)
+				line = "data: " + data
+			}
 			if openAIStreamEventIsTerminal(data) {
 				sawTerminalEvent = true
 			}
@@ -5389,6 +5399,45 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 	)
 }
 
+// normalizeOpenAIResponsesUsagePayload adds fields that strict Codex
+// Responses clients deserialize as required.  A number of OpenAI-compatible
+// upstreams omit input_tokens_details.cached_tokens when no prompt cache was
+// used (or return an empty input_tokens_details object).  The value is
+// semantically zero in that case; adding it at the gateway boundary keeps the
+// upstream response otherwise untouched while avoiding client-side
+// ResponseCompleted deserialization failures.
+func normalizeOpenAIResponsesUsagePayload(payload []byte) []byte {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return payload
+	}
+	usagePath := ""
+	for _, candidate := range []string{"response.usage", "usage"} {
+		usage := gjson.GetBytes(payload, candidate)
+		if usage.Exists() && usage.IsObject() {
+			usagePath = candidate
+			break
+		}
+	}
+	if usagePath == "" {
+		return payload
+	}
+	cachedPath := usagePath + ".input_tokens_details.cached_tokens"
+	if gjson.GetBytes(payload, cachedPath).Exists() {
+		return payload
+	}
+	// Only Responses usage objects are normalized.  Do not introduce a new
+	// usage section into arbitrary error/event payloads.
+	if !gjson.GetBytes(payload, usagePath+".input_tokens").Exists() &&
+		!gjson.GetBytes(payload, usagePath+".prompt_tokens").Exists() {
+		return payload
+	}
+	normalized, err := sjson.SetBytes(payload, cachedPath, 0)
+	if err != nil {
+		return payload
+	}
+	return normalized
+}
+
 func firstPositiveGJSONInt(values ...gjson.Result) int {
 	for _, value := range values {
 		if !value.Exists() {
@@ -5439,6 +5488,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
+	body = normalizeOpenAIResponsesUsagePayload(body)
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -5470,6 +5520,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 
 	usage := &OpenAIUsage{}
 	if ok {
+		finalResponse = normalizeOpenAIResponsesUsagePayload(finalResponse)
 		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
 			*usage = parsedUsage
 		}
@@ -5489,6 +5540,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		}
 		// Correct tool calls in final response
 		body = s.correctToolCallsInResponseBody(body)
+		body = normalizeOpenAIResponsesUsagePayload(body)
 	} else {
 		terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 		if terminalOK && terminalType == "response.failed" {
@@ -5821,6 +5873,22 @@ func OpenAICompactSessionSeedKeyForTest() string {
 
 func NormalizeOpenAICompactRequestBodyForTest(body []byte) ([]byte, bool, error) {
 	return normalizeOpenAICompactRequestBody(body)
+}
+
+// IsOpenAICompactionTriggerRequestForTest reports whether a Responses request
+// contains the compaction_trigger input item used by remote-compaction v2.
+// The exported name is kept for the handler package, which intentionally does
+// not depend on the service's internal request-body helpers.
+func IsOpenAICompactionTriggerRequestForTest(body []byte) bool {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	for _, item := range gjson.GetBytes(body, "input").Array() {
+		if strings.EqualFold(strings.TrimSpace(item.Get("type").String()), "compaction_trigger") {
+			return true
+		}
+	}
+	return false
 }
 
 func isOpenAIResponsesCompactPath(c *gin.Context) bool {

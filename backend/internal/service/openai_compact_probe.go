@@ -1,10 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -60,6 +63,50 @@ func shouldMarkOpenAICompactUnsupported(status int, body []byte) bool {
 	return false
 }
 
+// isValidOpenAICompactProbeResponse verifies the response shape required by
+// Codex remote-compaction v2. A plain HTTP 200 (or an ordinary Responses
+// response with output: []) is not sufficient: the client requires exactly one
+// output item whose type is "compaction".
+func isValidOpenAICompactProbeResponse(body []byte) bool {
+	check := func(payload []byte) bool {
+		if len(payload) == 0 || !gjson.ValidBytes(payload) {
+			return false
+		}
+		for _, root := range []string{"", "response"} {
+			prefix := root
+			if prefix != "" {
+				prefix += "."
+			}
+			output := gjson.GetBytes(payload, prefix+"output")
+			if !output.Exists() || !output.IsArray() || len(output.Array()) != 1 {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(payload, prefix+"output.0.type").String()), "compaction") {
+				return true
+			}
+		}
+		return false
+	}
+
+	trimmed := bytes.TrimSpace(body)
+	if check(trimmed) {
+		return true
+	}
+	// Be tolerant of an upstream that ignores Accept and wraps the terminal
+	// response in an SSE stream.
+	for _, line := range strings.Split(string(trimmed), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data != "" && data != "[DONE]" && check([]byte(data)) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildOpenAICompactProbeExtraUpdates(resp *http.Response, body []byte, probeErr error, now time.Time) map[string]any {
 	updates := map[string]any{
 		"openai_compact_checked_at":  now.Format(time.RFC3339),
@@ -85,8 +132,13 @@ func buildOpenAICompactProbeExtraUpdates(resp *http.Response, body []byte, probe
 		}
 		errMsg = truncateString(sanitizeUpstreamErrorMessage(errMsg), 2048)
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			updates["openai_compact_supported"] = true
-			updates["openai_compact_last_error"] = ""
+			if isValidOpenAICompactProbeResponse(body) {
+				updates["openai_compact_supported"] = true
+				updates["openai_compact_last_error"] = ""
+			} else {
+				updates["openai_compact_supported"] = false
+				updates["openai_compact_last_error"] = "compact probe returned no single compaction output item"
+			}
 		} else {
 			if shouldMarkOpenAICompactUnsupported(resp.StatusCode, body) {
 				updates["openai_compact_supported"] = false
