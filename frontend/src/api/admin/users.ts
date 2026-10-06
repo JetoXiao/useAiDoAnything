@@ -163,10 +163,13 @@ export async function updateBalance(
   operation: 'set' | 'add' | 'subtract' = 'set',
   notes?: string
 ): Promise<AdminUser> {
+  const idempotencyKey = `admin-balance-${id}-${Date.now()}-${Math.random().toString(36).slice(2)}`
   const { data } = await apiClient.post<AdminUser>(`/admin/users/${id}/balance`, {
     balance,
     operation,
     notes: notes || ''
+  }, {
+    headers: { 'Idempotency-Key': idempotencyKey }
   })
   return data
 }

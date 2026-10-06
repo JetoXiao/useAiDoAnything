@@ -12,6 +12,7 @@ vi.mock('@/api/client', () => ({
 
 import {
   bindUserAuthIdentity,
+  updateBalance,
   type AdminBindAuthIdentityRequest,
   type AdminBoundAuthIdentity,
 } from '@/api/admin/users'
@@ -113,5 +114,17 @@ describe('admin users api auth identity binding', () => {
   it('keeps bind auth identity request and response types aligned with the backend contract', () => {
     expect(requestContractExact).toBe(true)
     expect(responseContractExact).toBe(true)
+  })
+
+  it('adds an idempotency key when adjusting a user balance', async () => {
+    post.mockResolvedValue({ data: { id: 9, balance: 15 } })
+
+    await updateBalance(9, 5, 'add', 'manual top-up')
+
+    expect(post).toHaveBeenCalledWith(
+      '/admin/users/9/balance',
+      { balance: 5, operation: 'add', notes: 'manual top-up' },
+      { headers: { 'Idempotency-Key': expect.stringMatching(/^admin-balance-9-/) } }
+    )
   })
 })

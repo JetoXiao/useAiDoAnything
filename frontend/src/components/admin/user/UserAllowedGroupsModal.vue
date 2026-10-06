@@ -307,8 +307,9 @@ const handleSave = async () => {
     appStore.showSuccess(t('admin.users.groupConfigUpdated'))
     emit('success')
     emit('close')
-  } catch (error) {
+  } catch (error: any) {
     console.error('Failed to update user group config:', error)
+    appStore.showError(error?.message || error?.response?.data?.message || error?.response?.data?.detail || t('common.error'))
   } finally {
     submitting.value = false
   }

@@ -4540,6 +4540,7 @@ export default {
         resetDialogTitle: '重置 OpenAI 周额度',
         resetDialogMessage: '将为账号“{name}”消耗 1 次上游重置机会，并通过该账号绑定的代理 IP 提交。此操作不可撤销。',
         resetSuccess: '已重置 {count} 个用量窗口',
+        resetAlreadyClear: '当前用量窗口已是重置状态，无需重复操作',
         resetNoChange: '未执行重置，上游返回：{code}',
         resetFailed: '重置 OpenAI 周额度失败'
       },

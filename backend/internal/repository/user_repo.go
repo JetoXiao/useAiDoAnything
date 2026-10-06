@@ -210,10 +210,10 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 			return err
 		}
 	} else {
-		defer agencyRows.Close()
 		if agencyRows.Next() {
 			var enabled bool
 			if err := agencyRows.Scan(&enabled); err != nil {
+				_ = agencyRows.Close()
 				return err
 			}
 			if enabled && userIn.Role == service.RoleUser {
@@ -221,6 +221,13 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 			}
 		}
 		if err := agencyRows.Err(); err != nil {
+			_ = agencyRows.Close()
+			return err
+		}
+		// A PostgreSQL transaction uses a single connection. Leaving rows open
+		// while issuing the next statement can corrupt the lib/pq protocol state
+		// ("unexpected Parse response 'C'"). Close eagerly before continuing.
+		if err := agencyRows.Close(); err != nil {
 			return err
 		}
 	}

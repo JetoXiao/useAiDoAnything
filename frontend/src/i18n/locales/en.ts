@@ -5227,6 +5227,7 @@ export default {
         resetDialogTitle: 'Reset OpenAI Weekly Quota',
         resetDialogMessage: 'This will consume one upstream reset credit for “{name}” through the proxy assigned to this account. This action cannot be undone.',
         resetSuccess: 'Reset {count} usage window(s)',
+        resetAlreadyClear: 'Usage windows are already reset; no further action is needed',
         resetNoChange: 'No reset was performed. Upstream returned: {code}',
         resetFailed: 'Failed to reset OpenAI weekly quota'
       },

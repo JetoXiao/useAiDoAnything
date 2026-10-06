@@ -80,7 +80,8 @@ const handleBalanceSubmit = async () => {
     appStore.showSuccess(t('common.success')); emit('success'); emit('close')
   } catch (e: any) {
     console.error('Failed to update balance:', e)
-    appStore.showError(e.response?.data?.detail || t('common.error'))
+    const fallbackKey = props.operation === 'add' ? 'admin.users.failedToDeposit' : 'admin.users.failedToWithdraw'
+    appStore.showError(e?.message || e?.response?.data?.message || e?.response?.data?.detail || t(fallbackKey))
   } finally { submitting.value = false }
 }
 </script>

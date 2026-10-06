@@ -812,7 +812,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	// 同步用户专属分组倍率
 	if input.GroupRates != nil && s.userGroupRateRepo != nil {
 		if err := s.userGroupRateRepo.SyncUserGroupRates(ctx, user.ID, input.GroupRates); err != nil {
-			logger.LegacyPrintf("service.admin", "failed to sync user group rates: user_id=%d err=%v", user.ID, err)
+			return nil, fmt.Errorf("sync user group rates: %w", err)
 		}
 	}
 
@@ -823,6 +823,12 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, user.ID)
 		}
 		if strings.Join(NormalizeAdminMenuPermissions(user.AdminMenuPermissions), "\x00") != oldPermissions {
+			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, user.ID)
+		}
+		// Group membership and per-group rates are embedded in API-key auth
+		// snapshots. Invalidate them immediately after an admin save so routing
+		// and billing do not retain the previous configuration for the L2 TTL.
+		if input.AllowedGroups != nil || input.GroupRates != nil {
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, user.ID)
 		}
 	}

@@ -160,6 +160,26 @@ func (s *UserRepoSuite) TestUpdate() {
 	s.Require().Equal("updated", updated.Username)
 }
 
+func (s *UserRepoSuite) TestUpdateClosesAgencyCapabilityRowsBeforeNextStatement() {
+	user := s.mustCreateUser(&service.User{Email: "update-agency-query@test.com", Username: "original"})
+	_, err := integrationDB.ExecContext(s.ctx, `
+		INSERT INTO affiliate_agency_capabilities
+			(root_partner_user_id, enabled, default_subagent_rate, max_subagent_rate, created_at, updated_at)
+		VALUES ($1, TRUE, 30, 50, NOW(), NOW())
+	`, user.ID)
+	s.Require().NoError(err)
+
+	got, err := s.repo.GetByID(s.ctx, user.ID)
+	s.Require().NoError(err)
+	got.Username = "updated-after-agency-query"
+	s.Require().NoError(s.repo.Update(s.ctx, got), "Update must close the query rows before issuing another statement")
+
+	updated, err := s.repo.GetByID(s.ctx, user.ID)
+	s.Require().NoError(err)
+	s.Require().Equal("updated-after-agency-query", updated.Username)
+	s.Require().Contains(updated.AdminMenuPermissions, "second_level_agency")
+}
+
 func (s *UserRepoSuite) TestUpdateIgnoresNoRowsFromConflictingEmailIdentityUpsert() {
 	user := s.mustCreateUser(&service.User{Email: "update-existing-identity@test.com", Username: "original"})
 

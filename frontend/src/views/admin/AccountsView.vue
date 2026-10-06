@@ -1831,6 +1831,10 @@ const confirmOpenAIRateLimitReset = async () => {
     usageManualRefreshToken.value += 1
     if (result.code === 'reset' && result.windows_reset > 0) {
       appStore.showSuccess(t('admin.accounts.usageWindow.resetSuccess', { count: result.windows_reset }))
+    } else if (result.code === 'nothing_to_reset') {
+      // The upstream treats reset as an idempotent operation. Nothing to reset
+      // means the desired state is already reached, not an operational error.
+      appStore.showSuccess(t('admin.accounts.usageWindow.resetAlreadyClear'))
     } else {
       appStore.showError(t('admin.accounts.usageWindow.resetNoChange', { code: result.code }))
     }

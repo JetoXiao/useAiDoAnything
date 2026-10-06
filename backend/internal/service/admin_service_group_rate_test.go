@@ -27,6 +27,7 @@ type userGroupRateRepoStubForGroupRate struct {
 	rpmSyncedGroupID int64
 	rpmSyncedEntries []GroupRPMOverrideInput
 	rpmSyncErr       error
+	userSyncErr      error
 }
 
 func (s *userGroupRateRepoStubForGroupRate) GetByUserID(_ context.Context, _ int64) (map[int64]float64, error) {
@@ -49,13 +50,34 @@ func (s *userGroupRateRepoStubForGroupRate) GetByGroupID(_ context.Context, grou
 }
 
 func (s *userGroupRateRepoStubForGroupRate) SyncUserGroupRates(_ context.Context, _ int64, _ map[int64]*float64) error {
-	panic("unexpected SyncUserGroupRates call")
+	return s.userSyncErr
 }
 
 func (s *userGroupRateRepoStubForGroupRate) SyncGroupRateMultipliers(_ context.Context, groupID int64, entries []GroupRateMultiplierInput) error {
 	s.syncedGroupID = groupID
 	s.syncedEntries = entries
 	return s.syncGroupErr
+}
+
+func TestAdminService_UpdateUser_PropagatesGroupRateSyncErrorAndInvalidatesSnapshots(t *testing.T) {
+	userRepo := &userRepoStub{user: &User{ID: 42, Email: "user@example.com", Role: RoleUser, Status: StatusActive}}
+	rateRepo := &userGroupRateRepoStubForGroupRate{userSyncErr: errors.New("sync failed")}
+	invalidator := &authCacheInvalidatorStub{}
+	svc := &adminServiceImpl{
+		userRepo:             userRepo,
+		userGroupRateRepo:    rateRepo,
+		authCacheInvalidator: invalidator,
+	}
+	rate := 0.5
+
+	_, err := svc.UpdateUser(context.Background(), 42, &UpdateUserInput{GroupRates: map[int64]*float64{7: &rate}})
+	require.ErrorContains(t, err, "sync user group rates")
+	require.Empty(t, invalidator.userIDs, "failed save must not be reported as a successful cache refresh")
+
+	rateRepo.userSyncErr = nil
+	_, err = svc.UpdateUser(context.Background(), 42, &UpdateUserInput{AllowedGroups: &[]int64{7}, GroupRates: map[int64]*float64{7: &rate}})
+	require.NoError(t, err)
+	require.Equal(t, []int64{42}, invalidator.userIDs)
 }
 
 func (s *userGroupRateRepoStubForGroupRate) SyncGroupRPMOverrides(_ context.Context, groupID int64, entries []GroupRPMOverrideInput) error {
