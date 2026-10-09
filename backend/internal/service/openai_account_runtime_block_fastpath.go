@@ -71,6 +71,12 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if s.rateLimitService == nil {
 		return false
 	}
+	if account.Platform == PlatformOpenAI && statusCode == http.StatusForbidden && isOpenAIModelEndpointAvailabilityError("", responseBody) {
+		// This is a model/endpoint capability mismatch, not an account-wide auth failure.
+		// Let the model-scoped breaker and failover path handle it without SetError.
+		slog.Warn("openai_model_endpoint_unavailable", "account_id", account.ID, "error", extractUpstreamErrorMessage(responseBody))
+		return true
+	}
 	shouldDisable := s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
 	if shouldDisable {
 		s.BlockAccountScheduling(account, time.Time{}, "upstream_disable")
@@ -100,13 +106,18 @@ func (s *OpenAIGatewayService) RecordOpenAIAccountFailoverForModel(ctx context.C
 		return s.RecordOpenAIAccountFailover(account, failoverErr)
 	}
 	accountBlocked := false
+	modelEndpointScoped := failoverErr.StatusCode == http.StatusForbidden && isOpenAIModelEndpointAvailabilityError("", failoverErr.ResponseBody)
 	// Authentication/payment failures describe the whole account. Capacity,
 	// transport, 429 and 5xx failures stay model-scoped; their side-effect
 	// handlers already apply an account-wide block when the upstream explicitly
 	// indicates one is necessary.
 	switch failoverErr.StatusCode {
-	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusPaymentRequired:
 		accountBlocked = s.RecordOpenAIAccountFailover(account, failoverErr)
+	case http.StatusForbidden:
+		if !modelEndpointScoped {
+			accountBlocked = s.RecordOpenAIAccountFailover(account, failoverErr)
+		}
 	}
 	modelBlocked := s.recordOpenAIAccountModelFailure(ctx, account, requestedModel, failoverErr.StatusCode)
 	return accountBlocked || modelBlocked

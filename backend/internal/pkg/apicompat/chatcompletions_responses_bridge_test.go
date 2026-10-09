@@ -87,6 +87,148 @@ func TestResponsesToChatCompletionsRequest_PreservesParallelToolCallsFalse(t *te
 	assert.False(t, *out.ParallelToolCalls)
 }
 
+func TestResponsesToChatCompletionsRequest_ConvertsCustomToolToFunctionWrapper(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "gpt-5.5",
+		Input: json.RawMessage(`"patch it"`),
+		Tools: []ResponsesTool{{Type: "custom", Name: "apply_patch", Description: "Apply a patch", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+
+	out, err := ResponsesToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Len(t, out.Tools, 1)
+	assert.Equal(t, "function", out.Tools[0].Type)
+	assert.Equal(t, "apply_patch", out.Tools[0].Function.Name)
+	assert.True(t, out.CustomToolNames["apply_patch"])
+	assert.JSONEq(t, `{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}`, string(out.Tools[0].Function.Parameters))
+}
+
+func TestResponsesToChatCompletionsRequest_ConvertsCustomToolHistory(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "gpt-5.5",
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call","call_id":"call_1","name":"apply_patch","input":"patch"},
+			{"type":"custom_tool_call_output","call_id":"call_1","output":"done"},
+			{"role":"user","content":"continue"}
+		]`),
+	}
+
+	out, err := ResponsesToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Len(t, out.Messages, 3)
+	assert.Equal(t, "assistant", out.Messages[0].Role)
+	assert.JSONEq(t, `{"input":"patch"}`, out.Messages[0].ToolCalls[0].Function.Arguments)
+	assert.Equal(t, "tool", out.Messages[1].Role)
+}
+
+func TestChatCompletionsStream_EmitsContentPartLifecycleBeforeTextDelta(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("gpt-5.5")
+	text := "hello"
+	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		ID: "chatcmpl_1", Model: "gpt-5.5",
+		Choices: []ChatChunkChoice{{Index: 0, Delta: ChatDelta{Content: &text}}},
+	}, state)
+
+	types := make([]string, 0, len(events))
+	for _, event := range events {
+		types = append(types, event.Type)
+	}
+	assert.Equal(t, []string{
+		"response.created", "response.in_progress", "response.output_item.added",
+		"response.content_part.added", "response.output_text.delta",
+	}, types)
+	require.NotNil(t, events[3].Part)
+	assert.Equal(t, "output_text", events[3].Part.Type)
+	assert.Equal(t, state.MessageItemID, events[4].ItemID)
+	addedJSON, err := json.Marshal(events[2])
+	require.NoError(t, err)
+	assert.Contains(t, string(addedJSON), `"output_index":0`)
+	assert.Contains(t, string(addedJSON), `"content":[]`)
+	assert.Contains(t, string(addedJSON), `"phase":"final_answer"`)
+	partAddedJSON, err := json.Marshal(events[3])
+	require.NoError(t, err)
+	assert.Contains(t, string(partAddedJSON), `"text":""`)
+	deltaJSON, err := json.Marshal(events[4])
+	require.NoError(t, err)
+	assert.Contains(t, string(deltaJSON), `"output_index":0`)
+	assert.Contains(t, string(deltaJSON), `"content_index":0`)
+
+	terminal := FinalizeChatCompletionsResponsesStream(state)
+	terminalTypes := make([]string, 0, len(terminal))
+	for _, event := range terminal {
+		terminalTypes = append(terminalTypes, event.Type)
+	}
+	assert.Equal(t, []string{
+		"response.output_text.done", "response.content_part.done",
+		"response.output_item.done", "response.completed",
+	}, terminalTypes)
+	doneJSON, err := json.Marshal(terminal[2])
+	require.NoError(t, err)
+	assert.Contains(t, string(doneJSON), `"content":[{"type":"output_text","text":"hello"}]`)
+	assert.Contains(t, string(doneJSON), `"phase":"final_answer"`)
+}
+
+func TestChatCompletionsStream_ClosesFunctionCallWithoutEmptyFinalMessage(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("gpt-5.5")
+	arg := `{"command":"TOOL_OK"}`
+	idx := 0
+	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		ID: "chatcmpl_tool", Model: "gpt-5.5",
+		Choices: []ChatChunkChoice{{Index: 0, Delta: ChatDelta{ToolCalls: []ChatToolCall{{Index: &idx, ID: "call_1", Type: "function", Function: ChatFunctionCall{Name: "terminal", Arguments: arg}}}}}},
+	}, state)
+
+	require.Len(t, events, 4)
+	assert.Equal(t, "response.output_item.added", events[2].Type)
+	assert.Equal(t, 0, events[2].OutputIndex)
+	assert.Equal(t, "function_call", events[2].Item.Type)
+	assert.Equal(t, "response.function_call_arguments.delta", events[3].Type)
+
+	terminal := FinalizeChatCompletionsResponsesStream(state)
+	require.Len(t, terminal, 3)
+	assert.Equal(t, "response.function_call_arguments.done", terminal[0].Type)
+	assert.Equal(t, arg, terminal[0].Arguments)
+	assert.Equal(t, 0, terminal[0].OutputIndex)
+	assert.Equal(t, "response.output_item.done", terminal[1].Type)
+	assert.Equal(t, arg, terminal[1].Item.Arguments)
+	assert.Equal(t, "response.completed", terminal[2].Type)
+	assert.Len(t, terminal[2].Response.Output, 1)
+	assert.Equal(t, "function_call", terminal[2].Response.Output[0].Type)
+	assert.Equal(t, events[2].Item.ID, terminal[1].Item.ID)
+	assert.Equal(t, events[2].Item.ID, terminal[2].Response.Output[0].ID)
+	assert.Equal(t, arg, terminal[2].Response.Output[0].Arguments)
+}
+
+func TestChatCompletionsStream_EmitsCustomToolInputLifecycle(t *testing.T) {
+	state := NewChatCompletionsToResponsesStreamState("gpt-5.5")
+	state.CustomToolNames["apply_patch"] = true
+	idx := 0
+	arg := `{"input":"*** Begin Patch"}`
+	events := ChatCompletionsChunkToResponsesEvents(&ChatCompletionsChunk{
+		Choices: []ChatChunkChoice{{Delta: ChatDelta{ToolCalls: []ChatToolCall{{Index: &idx, ID: "call_1", Function: ChatFunctionCall{Name: "apply_patch", Arguments: arg}}}}}},
+	}, state)
+
+	require.Len(t, events, 3)
+	assert.Equal(t, "custom_tool_call", events[2].Item.Type)
+	assert.Empty(t, events[2].Item.Input)
+	addedJSON, err := json.Marshal(events[2])
+	require.NoError(t, err)
+	assert.Contains(t, string(addedJSON), `"input":""`)
+
+	terminal := FinalizeChatCompletionsResponsesStream(state)
+	require.Len(t, terminal, 4)
+	assert.Equal(t, "response.custom_tool_call_input.delta", terminal[0].Type)
+	assert.Equal(t, "*** Begin Patch", terminal[0].Delta)
+	assert.Equal(t, "response.custom_tool_call_input.done", terminal[1].Type)
+	assert.Equal(t, "*** Begin Patch", terminal[1].Input)
+	assert.Equal(t, "response.output_item.done", terminal[2].Type)
+	assert.Equal(t, "custom_tool_call", terminal[2].Item.Type)
+	assert.Equal(t, "*** Begin Patch", terminal[2].Item.Input)
+	assert.Empty(t, terminal[2].Item.Arguments)
+	assert.Equal(t, "response.completed", terminal[3].Type)
+	require.Len(t, terminal[3].Response.Output, 1)
+	assert.Equal(t, "*** Begin Patch", terminal[3].Response.Output[0].Input)
+}
+
 func TestResponsesUsageUnmarshalAndBridgePreservesCacheWriteTokens(t *testing.T) {
 	var usage ResponsesUsage
 	require.NoError(t, json.Unmarshal([]byte(`{

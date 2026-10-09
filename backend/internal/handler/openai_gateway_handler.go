@@ -357,7 +357,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// This gives the client an immediate SSE byte during account failover and
 		// lets the final failure be sent as response.failed instead of a late JSON
 		// body that Codex cannot associate with the active stream.
-		if reqStream {
+		if shouldPrecommitOpenAIResponsesStream(reqStream, account) {
 			if !h.ensureOpenAIResponsesStreamPreamble(c, &streamStarted) {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
@@ -546,6 +546,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func shouldPrecommitOpenAIResponsesStream(reqStream bool, account *service.Account) bool {
+	return reqStream && (account == nil || !account.UsesOpenAIChatCompletionsFallback())
 }
 
 func isOpenAIRemoteCompactPath(c *gin.Context) bool {

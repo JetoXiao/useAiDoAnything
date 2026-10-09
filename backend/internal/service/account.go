@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 )
 
 type Account struct {
@@ -975,6 +976,10 @@ func (a *Account) IsOpenAIOAuth() bool {
 
 func (a *Account) IsOpenAIApiKey() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
+}
+
+func (a *Account) UsesOpenAIChatCompletionsFallback() bool {
+	return a != nil && a.IsOpenAIApiKey() && !openai_compat.ShouldUseResponsesAPI(a.Extra)
 }
 
 func (a *Account) GetOpenAIBaseURL() string {

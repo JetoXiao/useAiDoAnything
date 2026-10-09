@@ -2483,6 +2483,13 @@ func TestIsOpenAIOfficialCapacityErrorMessage(t *testing.T) {
 	require.False(t, IsOpenAIOfficialCapacityErrorMessage("Upstream request failed"))
 }
 
+func TestNewOpenAIOfficialCapacityFailoverError_AllowsBoundedSameAccountRetry(t *testing.T) {
+	err := newOpenAIOfficialCapacityFailoverError([]byte(`{"error":{"message":"Our servers are currently overloaded"}}`))
+	require.True(t, err.RetryableOnSameAccount)
+	require.Equal(t, 2, err.MaxSameAccountRetries)
+	require.Equal(t, http.StatusServiceUnavailable, err.StatusCode)
+}
+
 func TestOpenAICompatSSEFrameParserResetsEventTypeAtFrameBoundary(t *testing.T) {
 	var parser openAICompatSSEFrameParser
 

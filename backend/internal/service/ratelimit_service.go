@@ -81,6 +81,8 @@ const (
 	// scheduler move on while avoiding the 10 minute cooldown used for an
 	// unknown 403.
 	openAI403TransientCooldownSeconds = 60
+	openAITransient403WindowMinutes   = 180
+	openAITransient403MaxCooldown     = 2 * time.Hour
 )
 
 // NewRateLimitService 创建RateLimitService实例
@@ -297,6 +299,13 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			shouldDisable = true
 			break
 		}
+		// OpenAI 的普通 openai_error 可能只是上游临时计费/路由异常，
+		// 不足以证明账号余额耗尽或工作区已停用。保留故障切换，但不要把整号置为 error。
+		if account.Platform == PlatformOpenAI && !isOpenAIPermanentPaymentError(upstreamMsg, responseBody) {
+			slog.Warn("openai_payment_error_not_account_fatal", "account_id", account.ID, "message", upstreamMsg)
+			shouldDisable = true
+			break
+		}
 		// 支付要求：余额不足或计费问题，停止调度
 		msg := "Payment required (402): insufficient balance or billing issue"
 		if upstreamMsg != "" {
@@ -340,6 +349,40 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	}
 
 	return shouldDisable
+}
+
+func isOpenAIPermanentPaymentError(upstreamMsg string, responseBody []byte) bool {
+	text := strings.ToLower(strings.TrimSpace(upstreamMsg + " " + string(responseBody)))
+	for _, marker := range []string{
+		"insufficient_quota",
+		"insufficient balance",
+		"insufficient_user_quota",
+		"billing_insufficient",
+		"payment required",
+		"deactivated_workspace",
+		"workspace has been deactivated",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isOpenAIModelEndpointAvailabilityError(upstreamMsg string, responseBody []byte) bool {
+	text := strings.ToLower(strings.TrimSpace(upstreamMsg + " " + string(responseBody)))
+	for _, marker := range []string{
+		"model is not available on the account's",
+		"model is not available on the account’s",
+		"excel bps endpoint",
+		"model_not_available",
+		"model unavailable on this endpoint",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // PreCheckUsage proactively checks local quota before dispatching a request.
@@ -782,13 +825,23 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 	// deliberately narrow; unknown 403 payloads retain the existing protective
 	// behaviour below.
 	if isOpenAITransient403(upstreamMsg, responseBody) {
-		until := time.Now().Add(openAI403TransientCooldownSeconds * time.Second)
-		reason := fmt.Sprintf("OpenAI transient edge 403 cooldown (%ds): %s", openAI403TransientCooldownSeconds, msg)
+		attempt := int64(1)
+		if s.openAI403CounterCache != nil {
+			count, err := s.openAI403CounterCache.IncrementOpenAITransient403Count(ctx, account.ID, openAITransient403WindowMinutes)
+			if err != nil {
+				slog.Warn("openai_transient_403_increment_failed", "account_id", account.ID, "error", err)
+			} else if count > 0 {
+				attempt = count
+			}
+		}
+		cooldown := openAITransient403Cooldown(attempt)
+		until := time.Now().Add(cooldown)
+		reason := fmt.Sprintf("OpenAI transient edge 403 cooldown (attempt=%d duration=%s): %s", attempt, cooldown, msg)
 		s.notifyAccountSchedulingBlocked(account, until, "openai_403_transient")
 		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
 			slog.Warn("openai_403_transient_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
 		}
-		slog.Warn("openai_403_transient_cooldown", "account_id", account.ID, "until", until, "reason", msg)
+		slog.Warn("openai_403_transient_cooldown", "account_id", account.ID, "until", until, "attempt", attempt, "cooldown", cooldown, "reason", msg)
 		return true
 	}
 
@@ -827,6 +880,19 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		"threshold", openAI403DisableThreshold,
 	)
 	return true
+}
+
+func openAITransient403Cooldown(attempt int64) time.Duration {
+	switch {
+	case attempt <= 1:
+		return openAI403TransientCooldownSeconds * time.Second
+	case attempt == 2:
+		return 5 * time.Minute
+	case attempt == 3:
+		return 30 * time.Minute
+	default:
+		return openAITransient403MaxCooldown
+	}
 }
 
 // isOpenAITransient403 recognises only response text that explicitly points
@@ -1549,6 +1615,9 @@ func (s *RateLimitService) ResetOpenAI403Counter(ctx context.Context, accountID 
 	}
 	if err := s.openAI403CounterCache.ResetOpenAI403Count(ctx, accountID); err != nil {
 		slog.Warn("openai_403_reset_failed", "account_id", accountID, "error", err)
+	}
+	if err := s.openAI403CounterCache.ResetOpenAITransient403Count(ctx, accountID); err != nil {
+		slog.Warn("openai_transient_403_reset_failed", "account_id", accountID, "error", err)
 	}
 }
 

@@ -140,6 +140,13 @@ func TestEnsureOpenAIResponsesStreamPreambleWritesImmediateKeepalive(t *testing.
 	assert.Equal(t, ":\n\n", w.Body.String())
 }
 
+func TestShouldPrecommitOpenAIResponsesStream_DoesNotCommitFallbackBeforeValidation(t *testing.T) {
+	fallback := &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Extra: map[string]any{"openai_responses_supported": false}}
+	native := &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Extra: map[string]any{"openai_responses_supported": true}}
+	require.False(t, shouldPrecommitOpenAIResponsesStream(true, fallback))
+	require.True(t, shouldPrecommitOpenAIResponsesStream(true, native))
+}
+
 func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
 

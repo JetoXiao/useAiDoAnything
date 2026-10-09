@@ -245,6 +245,7 @@ type ResponsesInputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	Input     string `json:"input,omitempty"`
 	ID        string `json:"id,omitempty"`
 
 	// type=function_call_output
@@ -258,12 +259,28 @@ type ResponsesContentPart struct {
 	ImageURL string `json:"image_url,omitempty"` // data URI for input_image
 }
 
+func (p ResponsesContentPart) MarshalJSON() ([]byte, error) {
+	type contentPartAlias ResponsesContentPart
+	var text *string
+	if p.Type == "output_text" || p.Text != "" {
+		text = &p.Text
+	}
+	return json.Marshal(struct {
+		*contentPartAlias
+		Text *string `json:"text,omitempty"`
+	}{
+		contentPartAlias: (*contentPartAlias)(&p),
+		Text:             text,
+	})
+}
+
 // ResponsesTool describes a tool in the Responses API.
 type ResponsesTool struct {
 	Type        string          `json:"type"` // "function" | "web_search" | "local_shell" etc.
 	Name        string          `json:"name,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Format      json.RawMessage `json:"format,omitempty"`
 	Strict      *bool           `json:"strict,omitempty"`
 }
 
@@ -303,6 +320,7 @@ type ResponsesOutput struct {
 	Role    string                 `json:"role,omitempty"`
 	Content []ResponsesContentPart `json:"content,omitempty"`
 	Status  string                 `json:"status,omitempty"`
+	Phase   string                 `json:"phase,omitempty"`
 
 	// type=reasoning
 	EncryptedContent string             `json:"encrypted_content,omitempty"`
@@ -312,9 +330,37 @@ type ResponsesOutput struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	Input     string `json:"input,omitempty"`
 
 	// type=web_search_call
 	Action *WebSearchAction `json:"action,omitempty"`
+}
+
+func (o ResponsesOutput) MarshalJSON() ([]byte, error) {
+	type outputAlias ResponsesOutput
+	var content *[]ResponsesContentPart
+	var arguments *string
+	var input *string
+	if o.Type == "message" {
+		content = &o.Content
+	}
+	if o.Type == "function_call" {
+		arguments = &o.Arguments
+	}
+	if o.Type == "custom_tool_call" {
+		input = &o.Input
+	}
+	return json.Marshal(struct {
+		*outputAlias
+		Content   *[]ResponsesContentPart `json:"content,omitempty"`
+		Arguments *string                 `json:"arguments,omitempty"`
+		Input     *string                 `json:"input,omitempty"`
+	}{
+		outputAlias: (*outputAlias)(&o),
+		Content:     content,
+		Arguments:   arguments,
+		Input:       input,
+	})
 }
 
 // WebSearchAction describes the search action in a web_search_call output item.
@@ -419,7 +465,8 @@ type ResponsesStreamEvent struct {
 	Response *ResponsesResponse `json:"response,omitempty"`
 
 	// response.output_item.added / response.output_item.done
-	Item *ResponsesOutput `json:"item,omitempty"`
+	Item *ResponsesOutput      `json:"item,omitempty"`
+	Part *ResponsesContentPart `json:"part,omitempty"`
 
 	// response.output_text.delta / response.output_text.done
 	OutputIndex  int    `json:"output_index,omitempty"`
@@ -432,6 +479,7 @@ type ResponsesStreamEvent struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	Input     string `json:"input,omitempty"`
 
 	// response.reasoning_summary_text.delta / done
 	// Reuses Text/Delta fields above, SummaryIndex identifies which summary part
@@ -443,6 +491,39 @@ type ResponsesStreamEvent struct {
 
 	// Sequence number for ordering events
 	SequenceNumber int `json:"sequence_number,omitempty"`
+}
+
+func (e ResponsesStreamEvent) MarshalJSON() ([]byte, error) {
+	type eventAlias ResponsesStreamEvent
+	var outputIndex *int
+	var contentIndex *int
+
+	switch e.Type {
+	case "response.output_item.added", "response.output_item.done",
+		"response.content_part.added", "response.content_part.done",
+		"response.output_text.delta", "response.output_text.done",
+		"response.function_call_arguments.delta", "response.function_call_arguments.done",
+		"response.custom_tool_call_input.delta", "response.custom_tool_call_input.done",
+		"response.reasoning_summary_text.delta", "response.reasoning_summary_text.done":
+		outputIndex = &e.OutputIndex
+	}
+	switch e.Type {
+	case "response.content_part.added", "response.content_part.done",
+		"response.output_text.delta", "response.output_text.done":
+		contentIndex = &e.ContentIndex
+	}
+
+	return json.Marshal(struct {
+		*eventAlias
+		OutputIndex    *int `json:"output_index,omitempty"`
+		ContentIndex   *int `json:"content_index,omitempty"`
+		SequenceNumber *int `json:"sequence_number"`
+	}{
+		eventAlias:     (*eventAlias)(&e),
+		OutputIndex:    outputIndex,
+		ContentIndex:   contentIndex,
+		SequenceNumber: &e.SequenceNumber,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -468,8 +549,9 @@ type ChatCompletionsRequest struct {
 	Stop                json.RawMessage    `json:"stop,omitempty"` // string or []string
 
 	// Legacy function calling (deprecated but still supported)
-	Functions    []ChatFunction  `json:"functions,omitempty"`
-	FunctionCall json.RawMessage `json:"function_call,omitempty"`
+	Functions       []ChatFunction  `json:"functions,omitempty"`
+	FunctionCall    json.RawMessage `json:"function_call,omitempty"`
+	CustomToolNames map[string]bool `json:"-"`
 }
 
 // ChatStreamOptions configures streaming behavior.

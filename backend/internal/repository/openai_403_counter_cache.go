@@ -9,6 +9,7 @@ import (
 )
 
 const openAI403CounterPrefix = "openai_403_count:account:"
+const openAITransient403CounterPrefix = "openai_transient_403_count:account:"
 
 var openAI403CounterIncrScript = redis.NewScript(`
 	local key = KEYS[1]
@@ -32,6 +33,15 @@ func NewOpenAI403CounterCache(rdb *redis.Client) service.OpenAI403CounterCache {
 
 func (c *openAI403CounterCache) IncrementOpenAI403Count(ctx context.Context, accountID int64, windowMinutes int) (int64, error) {
 	key := fmt.Sprintf("%s%d", openAI403CounterPrefix, accountID)
+	return c.increment(ctx, key, windowMinutes)
+}
+
+func (c *openAI403CounterCache) IncrementOpenAITransient403Count(ctx context.Context, accountID int64, windowMinutes int) (int64, error) {
+	key := fmt.Sprintf("%s%d", openAITransient403CounterPrefix, accountID)
+	return c.increment(ctx, key, windowMinutes)
+}
+
+func (c *openAI403CounterCache) increment(ctx context.Context, key string, windowMinutes int) (int64, error) {
 
 	ttlSeconds := windowMinutes * 60
 	if ttlSeconds < 60 {
@@ -47,5 +57,10 @@ func (c *openAI403CounterCache) IncrementOpenAI403Count(ctx context.Context, acc
 
 func (c *openAI403CounterCache) ResetOpenAI403Count(ctx context.Context, accountID int64) error {
 	key := fmt.Sprintf("%s%d", openAI403CounterPrefix, accountID)
+	return c.rdb.Del(ctx, key).Err()
+}
+
+func (c *openAI403CounterCache) ResetOpenAITransient403Count(ctx context.Context, accountID int64) error {
+	key := fmt.Sprintf("%s%d", openAITransient403CounterPrefix, accountID)
 	return c.rdb.Del(ctx, key).Err()
 }

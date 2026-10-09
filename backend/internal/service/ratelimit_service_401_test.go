@@ -47,12 +47,17 @@ type tokenCacheInvalidatorRecorder struct {
 }
 
 type openAI403CounterCacheStub struct {
-	counts     []int64
-	resetCalls []int64
-	err        error
+	counts                  []int64
+	transientCounts         []int64
+	resetCalls              []int64
+	transientResetCalls     []int64
+	authIncrementCalls      int
+	transientIncrementCalls int
+	err                     error
 }
 
 func (s *openAI403CounterCacheStub) IncrementOpenAI403Count(_ context.Context, _ int64, _ int) (int64, error) {
+	s.authIncrementCalls++
 	if s.err != nil {
 		return 0, s.err
 	}
@@ -64,8 +69,26 @@ func (s *openAI403CounterCacheStub) IncrementOpenAI403Count(_ context.Context, _
 	return count, nil
 }
 
+func (s *openAI403CounterCacheStub) IncrementOpenAITransient403Count(_ context.Context, _ int64, _ int) (int64, error) {
+	s.transientIncrementCalls++
+	if s.err != nil {
+		return 0, s.err
+	}
+	if len(s.transientCounts) == 0 {
+		return 1, nil
+	}
+	count := s.transientCounts[0]
+	s.transientCounts = s.transientCounts[1:]
+	return count, nil
+}
+
 func (s *openAI403CounterCacheStub) ResetOpenAI403Count(_ context.Context, accountID int64) error {
 	s.resetCalls = append(s.resetCalls, accountID)
+	return nil
+}
+
+func (s *openAI403CounterCacheStub) ResetOpenAITransient403Count(_ context.Context, accountID int64) error {
+	s.transientResetCalls = append(s.transientResetCalls, accountID)
 	return nil
 }
 

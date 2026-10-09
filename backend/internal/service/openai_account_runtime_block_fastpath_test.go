@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -192,6 +193,22 @@ func TestOpenAIModelFailureBreaker_ModelScopedRequestErrorBlocksOnlyModel(t *tes
 	require.True(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.6-sol"))
 	require.False(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.6-terra"))
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestOpenAIModelEndpoint403DoesNotTripAccountWideBreaker(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 506, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	err := &UpstreamFailoverError{
+		StatusCode:   http.StatusForbidden,
+		ResponseBody: []byte(`{"error":{"message":"This model is not available on the account's Excel BPS endpoint"}}`),
+	}
+	for i := 0; i < 3; i++ {
+		ctx := context.WithValue(context.Background(), ctxkey.RequestID, fmt.Sprintf("endpoint-%d", i))
+		blocked := svc.RecordOpenAIAccountFailoverForModel(ctx, account, "gpt-5.6-sol", err)
+		require.Equal(t, i == 2, blocked)
+	}
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.True(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.6-sol"))
 }
 
 func TestOpenAIModelFailureBreaker_SuccessClearsBlockAndSelectionRecovers(t *testing.T) {

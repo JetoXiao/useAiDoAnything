@@ -213,9 +213,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		return s.streamChatCompletionsAsResponses(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, chatReq.CustomToolNames)
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, chatReq.CustomToolNames)
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
@@ -227,6 +227,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
+	customToolNames map[string]bool,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
@@ -255,7 +256,10 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 		})
 		return nil, fmt.Errorf("parse chat completions response: %w", err)
 	}
-	responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel)
+	responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel, customToolNames)
+	if !responsesResponseHasDeliverableOutput(responsesResp) {
+		return nil, newResponsesBridgeEmptyOutputFailoverError()
+	}
 
 	usage := OpenAIUsage{}
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
@@ -289,6 +293,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
+	customToolNames map[string]bool,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 	headersWritten := false
@@ -308,6 +313,9 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	}
 
 	state := apicompat.NewChatCompletionsToResponsesStreamState(originalModel)
+	state.CustomToolNames = customToolNames
+	var pending bytes.Buffer
+	visibleOutputCommitted := false
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	clientDisconnected := false
@@ -318,7 +326,6 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		if clientDisconnected || len(events) == 0 {
 			return
 		}
-		writeStreamHeaders()
 		for _, event := range events {
 			sse, err := apicompat.ResponsesEventToSSE(event)
 			if err != nil {
@@ -328,6 +335,11 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 				)
 				continue
 			}
+			if !visibleOutputCommitted {
+				_, _ = pending.WriteString(sse)
+				continue
+			}
+			writeStreamHeaders()
 			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
 				clientDisconnected = true
 				logger.L().Debug("openai responses chat fallback: client disconnected, continuing to drain upstream for billing",
@@ -336,6 +348,23 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 				)
 				return
 			}
+		}
+		if visibleOutputCommitted {
+			c.Writer.Flush()
+		}
+	}
+	commitVisibleOutput := func() {
+		if visibleOutputCommitted || clientDisconnected {
+			return
+		}
+		visibleOutputCommitted = true
+		writeStreamHeaders()
+		if pending.Len() > 0 {
+			if _, err := c.Writer.Write(pending.Bytes()); err != nil {
+				clientDisconnected = true
+				return
+			}
+			pending.Reset()
 		}
 		c.Writer.Flush()
 	}
@@ -392,11 +421,15 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			)
 			continue
 		}
-		if firstTokenMs == nil && !isOpenAIChatUsageOnlyStreamChunk(payload) && chatChunkStartsResponsesOutput(&chunk) {
+		startsVisibleOutput := chatChunkStartsResponsesOutput(&chunk)
+		if firstTokenMs == nil && !isOpenAIChatUsageOnlyStreamChunk(payload) && startsVisibleOutput {
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
 		writeEvents(apicompat.ChatCompletionsChunkToResponsesEvents(&chunk, state))
+		if startsVisibleOutput {
+			commitVisibleOutput()
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -428,7 +461,11 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		}, streamFailoverErr
 	}
 
+	if !chatResponsesStateHasDeliverableOutput(state) {
+		return &OpenAIForwardResult{RequestID: requestID, Usage: usage, Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel, ReasoningEffort: reasoningEffort, ServiceTier: serviceTier, Stream: true, Duration: time.Since(startTime), FirstTokenMs: firstTokenMs}, newResponsesBridgeEmptyOutputFailoverError()
+	}
 	writeEvents(apicompat.FinalizeChatCompletionsResponsesStream(state))
+	commitVisibleOutput()
 	if !clientDisconnected {
 		writeStreamHeaders()
 		if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
@@ -463,9 +500,36 @@ func chatChunkStartsResponsesOutput(chunk *apicompat.ChatCompletionsChunk) bool 
 		return false
 	}
 	for _, choice := range chunk.Choices {
-		if choice.Delta.Content != nil || choice.Delta.ReasoningContent != nil || len(choice.Delta.ToolCalls) > 0 {
+		if (choice.Delta.Content != nil && strings.TrimSpace(*choice.Delta.Content) != "") || len(choice.Delta.ToolCalls) > 0 {
 			return true
 		}
 	}
 	return false
+}
+
+func chatResponsesStateHasDeliverableOutput(state *apicompat.ChatCompletionsToResponsesStreamState) bool {
+	return state != nil && (strings.TrimSpace(state.Text.String()) != "" || len(state.ToolCalls) > 0)
+}
+
+func responsesResponseHasDeliverableOutput(response *apicompat.ResponsesResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, output := range response.Output {
+		if output.Type == "message" {
+			for _, part := range output.Content {
+				if part.Type == "output_text" && strings.TrimSpace(part.Text) != "" {
+					return true
+				}
+			}
+		}
+		if (output.Type == "function_call" || output.Type == "custom_tool_call") && strings.TrimSpace(output.Name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func newResponsesBridgeEmptyOutputFailoverError() *UpstreamFailoverError {
+	return &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte(`{"error":{"type":"responses_bridge_empty_output","message":"upstream completed without visible text or tool call"}}`), RequestScoped: true}
 }

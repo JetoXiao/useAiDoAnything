@@ -15,8 +15,16 @@ func (s *openAI403CounterResetStub) IncrementOpenAI403Count(context.Context, int
 	return 0, nil
 }
 
+func (s *openAI403CounterResetStub) IncrementOpenAITransient403Count(context.Context, int64, int) (int64, error) {
+	return 0, nil
+}
+
 func (s *openAI403CounterResetStub) ResetOpenAI403Count(_ context.Context, accountID int64) error {
 	s.resetCalls = append(s.resetCalls, accountID)
+	return nil
+}
+
+func (s *openAI403CounterResetStub) ResetOpenAITransient403Count(context.Context, int64) error {
 	return nil
 }
 

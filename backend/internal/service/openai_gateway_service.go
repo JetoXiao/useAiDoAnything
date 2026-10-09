@@ -1205,7 +1205,12 @@ func newOpenAIOfficialCapacityFailoverError(upstreamPayload []byte) *UpstreamFai
 		errorPayload["upstream_message"] = upstreamMessage
 	}
 	body, _ := json.Marshal(gin.H{"error": errorPayload})
-	return &UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, ResponseBody: body}
+	return &UpstreamFailoverError{
+		StatusCode:             http.StatusServiceUnavailable,
+		ResponseBody:           body,
+		RetryableOnSameAccount: true,
+		MaxSameAccountRetries:  2,
+	}
 }
 
 func normalizeOpenAIOfficialCapacityFailoverError(err *UpstreamFailoverError) *UpstreamFailoverError {

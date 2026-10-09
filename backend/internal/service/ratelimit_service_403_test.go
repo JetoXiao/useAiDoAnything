@@ -63,7 +63,7 @@ func TestRateLimitService_HandleUpstreamError_OpenAI403FirstHitTempUnschedulable
 
 func TestRateLimitService_HandleUpstreamError_OpenAI403TransientEdgeDoesNotConsumeAuthBudget(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
-	counter := &openAI403CounterCacheStub{counts: []int64{3}}
+	counter := &openAI403CounterCacheStub{counts: []int64{3}, transientCounts: []int64{1}}
 	blocker := &runtimeBlockRecorder{}
 	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	service.SetOpenAI403CounterCache(counter)
@@ -82,6 +82,28 @@ func TestRateLimitService_HandleUpstreamError_OpenAI403TransientEdgeDoesNotConsu
 	require.Len(t, blocker.accounts, 1)
 	require.Equal(t, "openai_403_transient", blocker.reasons[0])
 	require.True(t, blocker.until[0].Before(time.Now().Add(2*time.Minute)))
+	require.Equal(t, 0, counter.authIncrementCalls)
+	require.Equal(t, 1, counter.transientIncrementCalls)
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI403TransientEdgeBacksOffAfterRepeatedBlocks(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	counter := &openAI403CounterCacheStub{transientCounts: []int64{3}}
+	blocker := &runtimeBlockRecorder{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetOpenAI403CounterCache(counter)
+	service.SetAccountRuntimeBlocker(blocker)
+	account := &Account{ID: 304, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(), account, http.StatusForbidden, http.Header{},
+		[]byte(`<!doctype html><title>Attention Required! | Cloudflare</title><div>cf-ray: abc</div>`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Contains(t, repo.lastTempReason, "attempt=3")
+	require.True(t, blocker.until[0].After(time.Now().Add(20*time.Minute)))
 }
 
 func TestRateLimitService_HandleUpstreamError_OpenAI403ThresholdDisables(t *testing.T) {
@@ -108,4 +130,24 @@ func TestRateLimitService_HandleUpstreamError_OpenAI403ThresholdDisables(t *test
 	require.Equal(t, 0, repo.tempCalls)
 	require.Contains(t, repo.lastErrorMsg, "workspace forbidden by policy")
 	require.Contains(t, repo.lastErrorMsg, "consecutive_403=3/3")
+}
+
+func TestRateLimitService_HandleUpstreamError_OpenAI402GenericErrorDoesNotDisableAccount(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{ID: 305, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(), account, http.StatusPaymentRequired, http.Header{},
+		[]byte(`{"error":{"type":"openai_error","message":"temporary upstream billing error"}}`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 0, repo.setErrorCalls)
+}
+
+func TestOpenAIModelEndpoint403IsNotAccountAuthenticationFailure(t *testing.T) {
+	body := []byte(`{"error":{"message":"This model is not available on the account's Excel BPS endpoint (request id: req-1)"}}`)
+	require.True(t, isOpenAIModelEndpointAvailabilityError(string(body), body))
+	require.False(t, isOpenAIModelEndpointAvailabilityError("Access forbidden: account suspended", []byte(`{"error":{"message":"account suspended"}}`)))
 }
