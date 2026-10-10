@@ -336,8 +336,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			if trimmedPayload != "[DONE]" {
 				payloadBytes := []byte(trimmedPayload)
 				if IsOpenAIOfficialCapacityErrorBody(payloadBytes) {
-					if !clientOutputStarted && !c.Writer.Written() {
-						streamFailoverErr = newOpenAIOfficialCapacityFailoverError(payloadBytes)
+					if (!clientOutputStarted && !c.Writer.Written()) || account.IsPoolMode() {
+						streamFailoverErr = markOpenAIPoolModeStreamFailover(account, newOpenAIOfficialCapacityFailoverError(payloadBytes))
 						break
 					}
 					line = "data: " + string(decorateOpenAIOfficialCapacityPayload(payloadBytes))

@@ -519,7 +519,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 		payloadBytes := []byte(payload)
 		if IsOpenAIOfficialCapacityErrorBody(payloadBytes) {
-			streamFailoverErr = newOpenAIOfficialCapacityFailoverError(payloadBytes)
+			streamFailoverErr = markOpenAIPoolModeStreamFailover(account, newOpenAIOfficialCapacityFailoverError(payloadBytes))
 			return true
 		}
 

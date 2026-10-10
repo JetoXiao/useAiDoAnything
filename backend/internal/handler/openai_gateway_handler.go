@@ -357,6 +357,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// This gives the client an immediate SSE byte during account failover and
 		// lets the final failure be sent as response.failed instead of a late JSON
 		// body that Codex cannot associate with the active stream.
+		preambleWritten := false
 		if shouldPrecommitOpenAIResponsesStream(reqStream, account) {
 			if !h.ensureOpenAIResponsesStreamPreamble(c, &streamStarted) {
 				if accountReleaseFunc != nil {
@@ -364,6 +365,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				}
 				return
 			}
+			preambleWritten = true
 		}
 
 		// Forward request
@@ -412,7 +414,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					if c.Writer.Size() != writerSizeBeforeForward {
+					// The preamble is only a transport keepalive. It must not make an
+					// upstream failure look like user-visible output. Once the writer
+					// grew beyond the preamble, retrying would duplicate content.
+					preambleOnly := preambleWritten && c.Writer.Size() == writerSizeBeforeForward
+					if c.Writer.Size() != writerSizeBeforeForward && !preambleOnly && !failoverErr.ResumeStream {
 						if !failoverErr.RequestScoped {
 							h.gatewayService.ReportOpenAIAccountScheduleResultForModel(account.ID, reqModel, false, nil)
 						}

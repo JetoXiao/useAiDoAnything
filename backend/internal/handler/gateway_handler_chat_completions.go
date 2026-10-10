@@ -294,7 +294,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				if c.Writer.Size() != writerSizeBeforeForward {
+				if c.Writer.Size() != writerSizeBeforeForward && !failoverErr.ResumeStream {
 					h.gatewayService.RecordAccountFailoverForModel(c.Request.Context(), account, reqModel, failoverErr)
 					if account.Platform == service.PlatformAnthropic {
 						// 流已经开始后不能切换账号，但仍要隔离失败的

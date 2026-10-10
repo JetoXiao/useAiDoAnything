@@ -526,6 +526,7 @@ type UpstreamFailoverError struct {
 	RequestScoped          bool          // 请求内容与当前上游不兼容；默认仅切换当前请求，ModelScoped=true 时仍计入模型熔断
 	ModelScoped            bool          // 即使请求内容相关，也确认反映账号+模型兼容性，应计入模型熔断
 	RetryAfter             time.Duration // upstream Retry-After hint for retry pacing
+	ResumeStream           bool          // 号池流中可恢复错误：允许保持同一号池会话重试
 }
 
 // RetryAfterFromHeaders parses Retry-After as delta seconds or an HTTP date.

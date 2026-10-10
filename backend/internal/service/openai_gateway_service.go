@@ -1225,7 +1225,16 @@ func normalizeOpenAIOfficialCapacityFailoverError(err *UpstreamFailoverError) *U
 	normalized.RetryAfter = err.RetryAfter
 	normalized.RequestScoped = err.RequestScoped
 	normalized.ModelScoped = err.ModelScoped
+	normalized.ResumeStream = err.ResumeStream
 	return normalized
+}
+
+func markOpenAIPoolModeStreamFailover(account *Account, err *UpstreamFailoverError) *UpstreamFailoverError {
+	if err != nil && account != nil && account.IsPoolMode() {
+		err.ResumeStream = true
+		err.RetryableOnSameAccount = true
+	}
+	return err
 }
 
 func decorateOpenAIOfficialCapacityPayload(payload []byte) []byte {
@@ -4036,6 +4045,7 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 	return &UpstreamFailoverError{
 		StatusCode:   http.StatusBadGateway,
 		ResponseBody: body,
+		ResumeStream: account != nil && account.IsPoolMode(),
 	}
 }
 
@@ -4134,9 +4144,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					line = "data: " + trimmedData
 					failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				}
-				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
+				if (!openAIStreamClientOutputStarted(c, clientOutputStarted) || account.IsPoolMode()) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
 					return resultWithUsage(),
-						s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage)
+						markOpenAIPoolModeStreamFailover(account, s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage))
 				}
 				forceFlushFailedEvent = true
 				sawFailedEvent = true
@@ -5020,9 +5030,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					line = "data: " + data
 					failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				}
-				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
+				if (!openAIStreamClientOutputStarted(c, clientOutputStarted) || account.IsPoolMode()) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
 					sawFailedEvent = true
-					streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, dataBytes, failedMessage)
+					streamFailoverErr = markOpenAIPoolModeStreamFailover(account, s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, dataBytes, failedMessage))
 					return
 				}
 				forceFlushFailedEvent = true
